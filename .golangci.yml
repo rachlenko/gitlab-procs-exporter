@@ -1,0 +1,44 @@
+version: "2"
+run:
+  concurrency: 4
+linters:
+  default: none
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - copyloopvar
+    - dupl
+    - durationcheck
+    - errcheck
+    - errname
+    - errorlint
+    - gosec
+    - govet
+    - ineffassign
+    - makezero
+    - misspell
+    - nilerr
+    - noctx
+    - staticcheck
+    - unused
+    - whitespace
+
+  settings:
+    gosec:
+      excludes:
+        - G204 # Subprocess with variables is used by exporter to inspect telemetry
+        - G304 # Path traversal taint false-positives when reading /proc files
+    gocyclo:
+      min-complexity: 20
+    lll:
+      line-length: 140
+
+  exclusions:
+    rules:
+      - linters:
+          - errcheck
+        text: "Error return value of .*.Close.*is not checked"
+      - linters:
+          - errcheck
+        text: "Error return value of .*.Fprintf.*is not checked"

@@ -1,0 +1,36 @@
+version: 2
+
+builds:
+  - id: gitlab-procs-exporter
+    main: ./main.go
+    binary: gitlab-procs-exporter
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.revision={{.Tag}}-{{.ShortCommit}}
+
+archives:
+  - id: gitlab-procs-exporter
+    builds:
+      - gitlab-procs-exporter
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+nfpms:
+  - id: gitlab-procs-exporter
+    package_name: gitlab-procs-exporter
+    builds:
+      - gitlab-procs-exporter
+    vendor: Sunrise
+    homepage: https://github.com/sunrise/gitlab-procs-exporter
+    maintainer: Sunrise Team <support@sunrise.com>
+    description: Prometheus process exporter with active 10m sliding history window and dynamic dashboard
+    license: MIT
+    formats:
+      - deb
+      - rpm

@@ -1,0 +1,46 @@
+# Compiled binaries
+gitlab-procs-exporter
+gitlab-procs-exporter.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+gitlab-procs-exporter-linux-*
+
+# Testing & Coverage
+*.test
+*.out
+*.prof
+coverage.txt
+profile.out
+
+# Dependency management (kept go.sum but ignore vendor/ if vendor mode is not preferred)
+# vendor/
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Common Editor and IDE caches
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~
+.project
+.classpath
+.settings/
+
+# Local logs and temporary files
+*.log
+tmp/
+dist/

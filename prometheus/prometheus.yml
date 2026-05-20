@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 5s     # Short interval for quick query feedback
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'gitlab-procs-exporter'
+    static_configs:
+      - targets: ['IPADDRESS:8000']

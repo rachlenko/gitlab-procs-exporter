@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitLab Process History Exporter</title>
+    <!-- Google Fonts Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chart.js CDN for timeline rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --glass-bg: rgba(17, 24, 39, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --accent-indigo: #6366f1;
+            --accent-teal: #14b8a6;
+            --accent-rose: #f43f5e;
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --sidebar-width: 320px;
+            --card-glow: rgba(99, 102, 241, 0.1);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.12) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(20, 184, 166, 0.08) 0px, transparent 50%);
+        }
+
+        /* Layout Structure */
+        .app-container {
+            display: flex;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Sidebar: Process List */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: var(--glass-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-right: 1px solid var(--glass-border);
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            flex-shrink: 0;
+        }
+
+        .sidebar-header {
+            padding: 24px;
+            border-bottom: 1px solid var(--glass-border);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .brand-logo {
+            width: 32px;
+            height: 32px;
+            background: linear-gradient(135deg, var(--accent-indigo), var(--accent-teal));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: #fff;
+            box-shadow: 0 0 15px rgba(99, 102, 241, 0.4);
+        }
+
+        .brand-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #ffffff, #d1d5db);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .search-box {
+            position: relative;
+            width: 100%;
+        }
+
+        .search-input {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            padding: 10px 12px 10px 36px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            transition: all 0.2s ease;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent-indigo);
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.2);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            pointer-events: none;
+        }
+
+        .process-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+
+        .process-list::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .process-list::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .process-item {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: 1px solid transparent;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .process-item:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.05);
+        }
+
+        .process-item.active-item {
+            background: rgba(99, 102, 241, 0.12);
+            border-color: rgba(99, 102, 241, 0.3);
+            box-shadow: inset 0 0 8px rgba(99, 102, 241, 0.1);
+        }
+
+        .proc-info {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 0;
+            flex: 1;
+        }
+
+        .proc-name {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .proc-pid {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .proc-badge {
+            font-size: 0.75rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+            background: rgba(20, 184, 166, 0.15);
+            color: var(--accent-teal);
+            flex-shrink: 0;
+        }
+
+        /* Main Workspace Content */
+        .main-content {
+            flex: 1;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+            overflow-y: auto;
+            height: 100%;
+        }
+
+        .main-content::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .main-content::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        /* Dashboard Header */
+        .dashboard-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--glass-border);
+        }
+
+        .view-title {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .refresh-status {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .pulse-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-teal);
+            box-shadow: 0 0 8px var(--accent-teal);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(20, 184, 166, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(20, 184, 166, 0); }
+        }
+
+        /* Overview Stat Cards */
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+        }
+
+        .stat-card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 16px;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        /* Charts Section */
+        .charts-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+
+        .chart-card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 20px;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            height: 280px;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chart-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .chart-wrapper {
+            flex: 1;
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Metadata & Environment Sections */
+        .details-grid {
+            display: grid;
+            grid-template-columns: 2fr 3fr;
+            gap: 16px;
+            flex: 1;
+            min-height: 350px;
+        }
+
+        .details-card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            overflow: hidden;
+        }
+
+        .details-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--glass-border);
+            padding-bottom: 12px;
+        }
+
+        .details-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .details-content {
+            flex: 1;
+            overflow-y: auto;
+            font-size: 0.85rem;
+            color: var(--text-primary);
+            line-height: 1.5;
+        }
+
+        .details-content::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .details-content::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        /* Cmdline formatting */
+        .cmdline-box {
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            padding: 14px;
+            font-family: monospace;
+            word-break: break-all;
+            white-space: pre-wrap;
+            color: #818cf8;
+        }
+
+        /* Env table formatting */
+        .env-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
+        }
+
+        .env-table th, .env-table td {
+            text-align: left;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--glass-border);
+        }
+
+        .env-table th {
+            font-weight: 600;
+            color: var(--text-secondary);
+            background: rgba(255, 255, 255, 0.02);
+            position: sticky;
+            top: 0;
+            backdrop-filter: blur(8px);
+        }
+
+        .env-key {
+            font-weight: 500;
+            color: var(--accent-teal);
+            word-break: break-all;
+        }
+
+        .env-val {
+            color: var(--text-primary);
+            word-break: break-all;
+            font-family: monospace;
+        }
+
+        .env-redacted {
+            color: var(--accent-rose);
+            font-weight: 500;
+            font-style: italic;
+        }
+
+        /* Filter Box Inside Inspector */
+        .inspector-filter {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .inspector-input {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--glass-border);
+            border-radius: 6px;
+            padding: 6px 10px;
+            color: var(--text-primary);
+            font-size: 0.8rem;
+        }
+
+        .inspector-input:focus {
+            outline: none;
+            border-color: var(--accent-teal);
+        }
+
+        /* No selection placeholder */
+        .no-selection {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex: 1;
+            color: var(--text-secondary);
+            text-align: center;
+            gap: 12px;
+        }
+
+        .no-selection-icon {
+            font-size: 2.5rem;
+            color: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Status colors */
+        .badge-active { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+        .badge-inactive { background: rgba(244, 63, 94, 0.15); color: #f43f5e; }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="brand">
+                    <div class="brand-logo">G</div>
+                    <span class="brand-title">GitLab Procs Monitor</span>
+                </div>
+                <div class="search-box">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="proc-search" class="search-input" placeholder="Search processes by PID/Name...">
+                </div>
+            </div>
+            <div class="process-list" id="process-list-container">
+                <!-- Dynamically loaded list -->
+                <div style="text-align: center; padding-top: 40px; color: var(--text-secondary); font-size: 0.85rem;">
+                    Loading process list...
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Workspace -->
+        <div class="main-content" id="main-content-area">
+            <!-- Default Welcome/Empty State -->
+            <div class="no-selection" id="welcome-panel">
+                <div class="no-selection-icon">⚙️</div>
+                <h3>Select a Process to Monitor</h3>
+                <p style="font-size: 0.85rem; max-width: 320px;">
+                    Choose an active process from the sidebar to view full environment configuration, command-line arguments, and 10-minute historical telemetry charts.
+                </p>
+            </div>
+
+            <!-- Dashboard Content (hidden by default until a process is selected) -->
+            <div id="dashboard-panel" style="display: none; flex-direction: column; gap: 24px; height: 100%;">
+                
+                <!-- Dynamic Header -->
+                <div class="dashboard-header">
+                    <div>
+                        <h2 class="view-title" id="active-title">gitlab-sidekiq</h2>
+                        <div class="refresh-status" style="margin-top: 4px;">
+                            <span class="proc-pid" id="active-subtitle">PID: 49204</span>
+                            <span id="active-status-badge" class="proc-badge">ACTIVE</span>
+                        </div>
+                    </div>
+                    <div class="refresh-status">
+                        <div class="pulse-indicator"></div>
+                        <span id="last-updated-text">Updating real-time</span>
+                    </div>
+                </div>
+
+                <!-- Overview Stat Cards -->
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <span class="stat-label">CPU Usage</span>
+                        <span class="stat-value" id="stat-cpu">0.0%</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Resident Memory (RSS)</span>
+                        <span class="stat-value" id="stat-rss">0 MB</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Virtual Memory (VMS)</span>
+                        <span class="stat-value" id="stat-vms">0 MB</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Total Disk Throughput</span>
+                        <span class="stat-value" id="stat-io">0 B/s</span>
+                    </div>
+                </div>
+
+                <!-- 10-Minute Charts -->
+                <div class="charts-container">
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-title">CPU Utilization History (10m)</span>
+                        </div>
+                        <div class="chart-wrapper">
+                            <canvas id="cpu-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-title">Memory Allocation History (10m)</span>
+                        </div>
+                        <div class="chart-wrapper">
+                            <canvas id="mem-chart"></canvas>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-title">Disk I/O History (10m)</span>
+                        </div>
+                        <div class="chart-wrapper">
+                            <canvas id="io-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detail Inspectors -->
+                <div class="details-grid">
+                    <!-- Cmdline -->
+                    <div class="details-card">
+                        <div class="details-header">
+                            <span class="details-title">Command Line Arguments (args)</span>
+                        </div>
+                        <div class="details-content">
+                            <div class="cmdline-box" id="cmdline-output"></div>
+                        </div>
+                    </div>
+
+                    <!-- Environ -->
+                    <div class="details-card">
+                        <div class="details-header">
+                            <span class="details-title">Environment Variables (environ)</span>
+                            <div class="inspector-filter" style="margin-bottom: 0;">
+                                <input type="text" id="env-filter" class="inspector-input" placeholder="Search variables...">
+                            </div>
+                        </div>
+                        <div class="details-content" style="padding: 0;">
+                            <table class="env-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 40%">Variable Name</th>
+                                        <th style="width: 60%">Value</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="env-table-body">
+                                    <!-- Dynamic rows -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let activeProcessId = null;
+        let activeProcessName = "";
+        let processMap = {}; // pid -> processData
+        let chartInstances = {};
+        let updateIntervalId = null;
+
+        // Start background refreshing
+        document.addEventListener("DOMContentLoaded", () => {
+            fetchProcesses();
+            setInterval(fetchProcesses, 10000); // refresh list every 10 seconds
+
+            // Search setup
+            document.getElementById("proc-search").addEventListener("input", filterProcessList);
+            document.getElementById("env-filter").addEventListener("input", filterEnvTable);
+        });
+
+        // Fetch processes list
+        async function fetchProcesses() {
+            try {
+                const response = await fetch("/api/processes");
+                const processes = await response.json();
+                
+                // Sort active first, then by name
+                processes.sort((a, b) => b.is_active - a.is_active || a.name.localeCompare(b.name));
+                
+                renderProcessList(processes);
+
+                // If currently viewing a process, refresh its dashboard details too
+                if (activeProcessId) {
+                    refreshDashboardData();
+                }
+            } catch (error) {
+                console.error("Error fetching process listing:", error);
+            }
+        }
+
+        // Render Sidebar process items
+        function renderProcessList(processes) {
+            const container = document.getElementById("process-list-container");
+            const searchQuery = document.getElementById("proc-search").value.toLowerCase();
+            
+            container.innerHTML = "";
+
+            processes.forEach(p => {
+                // Keep mapping for references
+                processMap[p.pid] = p;
+
+                // Match against search query
+                if (searchQuery && !p.name.toLowerCase().includes(searchQuery) && !p.pid.toString().includes(searchQuery)) {
+                    return;
+                }
+
+                const item = document.createElement("div");
+                item.className = `process-item ${activeProcessId === p.pid ? 'active-item' : ''}`;
+                item.onclick = () => selectProcess(p.pid, p.name);
+
+                const statusClass = p.is_active ? 'badge-active' : 'badge-inactive';
+                const statusText = p.is_active ? 'ACTIVE' : 'EXITED';
+
+                item.innerHTML = `
+                    <div class="proc-info">
+                        <span class="proc-name" title="${p.name}">${p.name}</span>
+                        <span class="proc-pid">PID: ${p.pid}</span>
+                    </div>
+                    <span class="proc-badge ${statusClass}">${statusText}</span>
+                `;
+                container.appendChild(item);
+            });
+
+            if (container.children.length === 0) {
+                container.innerHTML = `<div style="text-align: center; padding-top: 40px; color: var(--text-secondary); font-size: 0.85rem;">No processes matched.</div>`;
+            }
+        }
+
+        // Filter Sidebar listing locally on key up
+        function filterProcessList() {
+            const list = Object.values(processMap);
+            renderProcessList(list);
+        }
+
+        // Select process and open dashboard
+        function selectProcess(pid, name) {
+            activeProcessId = pid;
+            activeProcessName = name;
+
+            // Highlight selected item in sidebar
+            document.querySelectorAll(".process-item").forEach(el => el.classList.remove("active-item"));
+            const items = document.querySelectorAll(".process-item");
+            for (let item of items) {
+                if (item.querySelector(".proc-pid").textContent.includes(pid.toString())) {
+                    item.classList.add("active-item");
+                    break;
+                }
+            }
+
+            // Show dashboard, hide empty panel
+            document.getElementById("welcome-panel").style.display = "none";
+            document.getElementById("dashboard-panel").style.display = "flex";
+
+            // Initialize charts or reset
+            initCharts();
+
+            // Fetch and render dashboard
+            refreshDashboardData();
+
+            // Clear environment variable filter input
+            document.getElementById("env-filter").value = "";
+        }
+
+        // Refresh dynamic values on the dashboard
+        async function refreshDashboardData() {
+            if (!activeProcessId) return;
+
+            try {
+                const response = await fetch(`/api/history?pid=${activeProcessId}`);
+                const historyMap = await response.json();
+                
+                // Find matching timeline
+                let key = Object.keys(historyMap)[0];
+                let samples = historyMap[key];
+
+                if (!samples || samples.length === 0) {
+                    console.warn(`No samples returned for process ${activeProcessId}`);
+                    return;
+                }
+
+                // Latest state
+                let latest = samples[samples.length - 1];
+
+                // Update UI Headers & Labels
+                document.getElementById("active-title").textContent = latest.name;
+                document.getElementById("active-subtitle").textContent = `PID: ${latest.pid} | Start Time: ${new Date(latest.create_time).toLocaleTimeString()}`;
+                
+                const statusBadge = document.getElementById("active-status-badge");
+                statusBadge.textContent = latest.is_active ? "ACTIVE" : "EXITED";
+                statusBadge.className = `proc-badge ${latest.is_active ? 'badge-active' : 'badge-inactive'}`;
+
+                // Update Overview Cards
+                document.getElementById("stat-cpu").textContent = `${latest.cpu_usage.toFixed(1)}%`;
+                document.getElementById("stat-rss").textContent = formatBytes(latest.memory_rss);
+                document.getElementById("stat-vms").textContent = formatBytes(latest.memory_vms);
+                
+                // Calculate instant I/O throughput if multiple samples
+                let ioRateText = "0 B/s";
+                if (samples.length > 1) {
+                    let s1 = samples[samples.length - 2];
+                    let s2 = samples[samples.length - 1];
+                    let dt = (new Date(s2.timestamp) - new Date(s1.timestamp)) / 1000.0;
+                    if (dt > 0) {
+                        let bytes = (s2.io_read_bytes - s1.io_read_bytes) + (s2.io_write_bytes - s1.io_write_bytes);
+                        ioRateText = `${formatBytes(bytes / dt)}/s`;
+                    }
+                }
+                document.getElementById("stat-io").textContent = ioRateText;
+
+                // Update Command Line Output
+                document.getElementById("cmdline-output").textContent = latest.cmdline || "[None]";
+
+                // Populate Env Table
+                renderEnvTable(latest.environ);
+
+                // Update charts with full historical data
+                updateCharts(samples);
+
+                // Update Timestamp
+                document.getElementById("last-updated-text").textContent = `Refreshed ${new Date().toLocaleTimeString()}`;
+
+            } catch (err) {
+                console.error("Error refreshing dashboard stats:", err);
+            }
+        }
+
+        // Render Environment Variables Table
+        function renderEnvTable(environ) {
+            const body = document.getElementById("env-table-body");
+            body.innerHTML = "";
+
+            if (!environ || Object.keys(environ).length === 0) {
+                body.innerHTML = `<tr><td colspan="2" style="text-align: center; color: var(--text-secondary);">No environment variables accessible (requires root permissions).</td></tr>`;
+                return;
+            }
+
+            // Sort keys alphabetically
+            const sortedKeys = Object.keys(environ).sort();
+
+            sortedKeys.forEach(k => {
+                const val = environ[k];
+                const tr = document.createElement("tr");
+
+                const isRedacted = val === "[REDACTED]" || val.includes("[REDACTED]");
+                const valueHTML = isRedacted 
+                    ? `<span class="env-redacted">[REDACTED / SECRET]</span>` 
+                    : `<span class="env-val">${escapeHTML(val)}</span>`;
+
+                tr.innerHTML = `
+                    <td class="env-key">${escapeHTML(k)}</td>
+                    <td>${valueHTML}</td>
+                `;
+                body.appendChild(tr);
+            });
+        }
+
+        // Filter Environment Variables Table
+        function filterEnvTable() {
+            const filter = document.getElementById("env-filter").value.toLowerCase();
+            const rows = document.getElementById("env-table-body").getElementsByTagName("tr");
+
+            for (let row of rows) {
+                const keyCell = row.getElementsByTagName("td")[0];
+                const valCell = row.getElementsByTagName("td")[1];
+                if (keyCell && valCell) {
+                    const txtValue = keyCell.textContent || keyCell.innerText;
+                    const valText = valCell.textContent || valCell.innerText;
+                    if (txtValue.toLowerCase().indexOf(filter) > -1 || valText.toLowerCase().indexOf(filter) > -1) {
+                        row.style.display = "";
+                    } else {
+                        row.style.display = "none";
+                    }
+                }
+            }
+        }
+
+        // Chart Initialization
+        function initCharts() {
+            // Destroy existing charts to reload fresh dimensions and datasets
+            if (chartInstances.cpu) chartInstances.cpu.destroy();
+            if (chartInstances.mem) chartInstances.mem.destroy();
+            if (chartInstances.io) chartInstances.io.destroy();
+
+            const chartConfig = (label, color) => ({
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: label,
+                        data: [],
+                        borderColor: color,
+                        backgroundColor: color + '15',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        fill: true,
+                        pointRadius: 1,
+                        pointHoverRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: {
+                                color: '#6b7280',
+                                font: { size: 9 },
+                                maxTicksLimit: 6
+                            }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            ticks: {
+                                color: '#6b7280',
+                                font: { size: 9 }
+                            }
+                        }
+                    }
+                }
+            });
+
+            chartInstances.cpu = new Chart(document.getElementById("cpu-chart").getContext("2d"), chartConfig("CPU Usage (%)", "#6366f1"));
+            chartInstances.mem = new Chart(document.getElementById("mem-chart").getContext("2d"), chartConfig("Memory RSS (MB)", "#14b8a6"));
+            chartInstances.io = new Chart(document.getElementById("io-chart").getContext("2d"), chartConfig("I/O Read (MB)", "#f43f5e"));
+        }
+
+        // Update Chart Datasets
+        function updateCharts(samples) {
+            const timeLabels = samples.map(s => new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+            
+            // CPU Data
+            chartInstances.cpu.data.labels = timeLabels;
+            chartInstances.cpu.data.datasets[0].data = samples.map(s => s.cpu_usage);
+            chartInstances.cpu.update("none"); // none for fast updates without animation jumps
+
+            // Memory RSS (MB)
+            chartInstances.mem.data.labels = timeLabels;
+            chartInstances.mem.data.datasets[0].data = samples.map(s => s.memory_rss / (1024 * 1024));
+            chartInstances.mem.update("none");
+
+            // I/O read + write rate values (MB)
+            chartInstances.io.data.labels = timeLabels;
+            chartInstances.io.data.datasets[0].data = samples.map(s => (s.io_read_bytes + s.io_write_bytes) / (1024 * 1024));
+            chartInstances.io.update("none");
+        }
+
+        // Byte formatting utility
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        // HTML escaping utility
+        function escapeHTML(str) {
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+    </script>
+</body>
+</html>
