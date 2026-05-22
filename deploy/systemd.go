@@ -177,59 +177,6 @@ func InstallService(w io.Writer, cfg ServiceConfig) error {
 	return nil
 }
 
-// UpdateService installs the latest published version of the exporter and
-// enables + restarts the systemd service so the new binary takes effect.
-// Unlike enable --now, a restart guarantees an already-running service picks
-// up the freshly installed binary. The unit file is (re)written so ExecStart
-// stays consistent with the install location and flags. Requires Linux and
-// root, and an existing service (run --deploy-as-systemd-service first).
-func UpdateService(w io.Writer, cfg ServiceConfig) error {
-	cfg.setDefaults()
-	cfg.Version = "latest" // --update always pulls the latest release
-	logf := func(format string, a ...any) { fmt.Fprintf(w, "==> "+format+"\n", a...) }
-
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("systemd update is only supported on Linux (this host is %s)", runtime.GOOS)
-	}
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("must run as root (try: sudo %s --update)", cfg.BinName)
-	}
-	systemctl, err := exec.LookPath("systemctl")
-	if err != nil {
-		return fmt.Errorf("systemctl not found; this targets systemd-based systems: %w", err)
-	}
-	goBin, err := findGo()
-	if err != nil {
-		return err
-	}
-	logf("using go: %s", goBin)
-
-	logf("installing %s@latest -> %s", cfg.Module, cfg.binaryPath())
-	if err := goInstall(w, goBin, cfg); err != nil {
-		return err
-	}
-	logf("installed version: %s", installedVersion(cfg.binaryPath()))
-
-	if err := writeUnit(w, cfg); err != nil {
-		return err
-	}
-
-	logf("reloading systemd, enabling and restarting the service")
-	if err := runCmd(w, systemctl, "daemon-reload"); err != nil {
-		return fmt.Errorf("systemctl daemon-reload: %w", err)
-	}
-	if err := runCmd(w, systemctl, "enable", cfg.ServiceName+".service"); err != nil {
-		return fmt.Errorf("systemctl enable: %w", err)
-	}
-	if err := runCmd(w, systemctl, "restart", cfg.ServiceName+".service"); err != nil {
-		return fmt.Errorf("systemctl restart: %w", err)
-	}
-	_ = runCmd(w, systemctl, "--no-pager", "--full", "status", cfg.ServiceName+".service")
-
-	fmt.Fprintf(w, "\nDone. %s updated to the latest version and restarted on port %d.\n", cfg.ServiceName, cfg.Port)
-	return nil
-}
-
 // goInstall runs `go install <module>@<version>` into cfg.InstallDir and
 // confirms the binary landed. GOBIN pins the output location; GOFLAGS is
 // cleared so caller flags do not leak in; GOTOOLCHAIN=auto lets go fetch a
@@ -261,16 +208,6 @@ func writeUnit(w io.Writer, cfg ServiceConfig) error {
 		return fmt.Errorf("writing unit file: %w", err)
 	}
 	return nil
-}
-
-// installedVersion reports the --version output of the binary at path, or
-// "unknown" if it cannot be run.
-func installedVersion(path string) string {
-	out, err := exec.Command(path, "--version").Output()
-	if err != nil {
-		return "unknown"
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // UninstallService reverses InstallService: it stops and disables the systemd
