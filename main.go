@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strings"
 	"time"
 
+	"github.com/rachlenko/gitlab-procs-exporter/deploy"
 	"github.com/rachlenko/gitlab-procs-exporter/exporter"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -30,10 +32,60 @@ func main() {
 	port := flag.Int("port", 8000, "Port to run the exporter on")
 	scrapeInterval := flag.Duration("interval", 10*time.Second, "Scrape interval")
 	showVersion := flag.Bool("version", false, "Print version information and exit")
+
+	checkDeps := flag.Bool("check-dependencies", false,
+		"Verify the toolchain and environment can run `go install`, then exit")
+	deploySystemd := flag.Bool("deploy-as-systemd-service", false,
+		"Install the exporter as a systemd service (Linux, requires root), then exit")
+	uninstall := flag.Bool("uninstall", false,
+		"Stop/disable the systemd service and remove its unit file and binary (Linux, requires root), then exit")
+	serviceVersion := flag.String("service-version", "latest",
+		"Module version to install for --deploy-as-systemd-service")
+	installDir := flag.String("install-dir", "/usr/local/bin",
+		"Directory the binary is installed into for --deploy-as-systemd-service")
+	serviceName := flag.String("service-name", "gitlab-procs-exporter",
+		"systemd unit name for --deploy-as-systemd-service")
+	serviceUser := flag.String("service-user", "root",
+		"User the service runs as (root is required to read all processes' env/IO)")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(version())
+		return
+	}
+
+	if *checkDeps {
+		results := deploy.CheckDependencies()
+		deploy.PrintResults(os.Stdout, results)
+		if !deploy.AllPassed(results) {
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *deploySystemd {
+		err := deploy.InstallService(os.Stdout, deploy.ServiceConfig{
+			Version:     *serviceVersion,
+			InstallDir:  *installDir,
+			ServiceName: *serviceName,
+			ServiceUser: *serviceUser,
+			Port:        *port,
+			Interval:    *scrapeInterval,
+		})
+		if err != nil {
+			log.Fatalf("deploy failed: %v", err)
+		}
+		return
+	}
+
+	if *uninstall {
+		err := deploy.UninstallService(os.Stdout, deploy.ServiceConfig{
+			InstallDir:  *installDir,
+			ServiceName: *serviceName,
+		})
+		if err != nil {
+			log.Fatalf("uninstall failed: %v", err)
+		}
 		return
 	}
 

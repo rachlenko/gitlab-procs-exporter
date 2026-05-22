@@ -52,6 +52,37 @@ gitlab-procs-exporter --version
 go build -o gitlab-procs-exporter
 ```
 
+### Bootstrapping on a Host
+The binary can verify its own prerequisites and install itself as a systemd
+service — no separate scripts required.
+
+*   **Check dependencies** (Go toolchain ≥ 1.24, `git`, CA trust store, writable
+    install dir, network reachability to the module proxy). Exits non-zero if a
+    required dependency is missing:
+    ```bash
+    gitlab-procs-exporter --check-dependencies
+    ```
+*   **Install as a systemd service** (Linux, run as root). Re-installs the module
+    with `go install`, writes a unit file to `/etc/systemd/system`, then
+    `daemon-reload` + `enable --now`:
+    ```bash
+    sudo gitlab-procs-exporter --deploy-as-systemd-service \
+      --service-version=latest --port=8000 --interval=1m
+    ```
+    Tunable flags: `--service-version`, `--install-dir` (default `/usr/local/bin`),
+    `--service-name`, `--service-user` (default `root` — required to read every
+    process's environment and I/O counters), plus `--port` and `--interval` which
+    are baked into the unit's `ExecStart`.
+
+*   **Uninstall** (Linux, run as root). Stops and disables the service, removes
+    its unit file, reloads systemd, and deletes the installed binary. Idempotent
+    — safe to run even if nothing is installed:
+    ```bash
+    sudo gitlab-procs-exporter --uninstall
+    ```
+    Honors `--install-dir` and `--service-name` so a non-default install can be
+    removed cleanly.
+
 ### Changing the Collection Frequency
 You can control the interval at which the background scraper sweeps system processes using the `--interval` command-line flag. 
 
