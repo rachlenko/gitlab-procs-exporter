@@ -101,6 +101,17 @@ func TestUninstallServiceRejectsNonLinux(t *testing.T) {
 	}
 }
 
+func TestUpdateServiceRejectsNonLinux(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("this guard only triggers off Linux")
+	}
+	var buf bytes.Buffer
+	err := UpdateService(&buf, ServiceConfig{})
+	if err == nil || !strings.Contains(err.Error(), "only supported on Linux") {
+		t.Errorf("expected non-Linux rejection, got: %v", err)
+	}
+}
+
 func TestRemoveIfPresent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "artifact")

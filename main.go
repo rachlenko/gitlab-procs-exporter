@@ -39,6 +39,8 @@ func main() {
 		"Install the exporter as a systemd service (Linux, requires root), then exit")
 	uninstall := flag.Bool("uninstall", false,
 		"Stop/disable the systemd service and remove its unit file and binary (Linux, requires root), then exit")
+	update := flag.Bool("update", false,
+		"Install the latest version and enable + restart the systemd service (Linux, requires root), then exit")
 	serviceVersion := flag.String("service-version", "latest",
 		"Module version to install for --deploy-as-systemd-service")
 	installDir := flag.String("install-dir", "/usr/local/bin",
@@ -85,6 +87,20 @@ func main() {
 		})
 		if err != nil {
 			log.Fatalf("uninstall failed: %v", err)
+		}
+		return
+	}
+
+	if *update {
+		err := deploy.UpdateService(os.Stdout, deploy.ServiceConfig{
+			InstallDir:  *installDir,
+			ServiceName: *serviceName,
+			ServiceUser: *serviceUser,
+			Port:        *port,
+			Interval:    *scrapeInterval,
+		})
+		if err != nil {
+			log.Fatalf("update failed: %v", err)
 		}
 		return
 	}

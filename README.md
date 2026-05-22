@@ -74,6 +74,16 @@ service — no separate scripts required.
     process's environment and I/O counters), plus `--port` and `--interval` which
     are baked into the unit's `ExecStart`.
 
+*   **Update** (Linux, run as root). Installs the latest published version,
+    (re)writes the unit file, then enables and **restarts** the service so the
+    new binary takes effect (a plain `enable --now` would not restart an
+    already-running service):
+    ```bash
+    sudo gitlab-procs-exporter --update
+    ```
+    Honors `--install-dir`, `--service-name`, `--service-user`, `--port`, and
+    `--interval`.
+
 *   **Uninstall** (Linux, run as root). Stops and disables the service, removes
     its unit file, reloads systemd, and deletes the installed binary. Idempotent
     — safe to run even if nothing is installed:
