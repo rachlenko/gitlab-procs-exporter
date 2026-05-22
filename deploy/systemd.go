@@ -21,10 +21,7 @@ var systemdDir = "/etc/systemd/system"
 // ServiceConfig describes the systemd service to install. Zero-value fields
 // fall back to sensible defaults via setDefaults.
 type ServiceConfig struct {
-	Module      string        // module path passed to `go install`
-	Version     string        // module version, e.g. "latest" or "v0.0.2"
-	BinName     string        // installed binary name
-	InstallDir  string        // directory the binary is installed into
+	ExecPath    string        // absolute path written to ExecStart (auto-resolved if empty)
 	ServiceName string        // systemd unit name (without ".service")
 	ServiceUser string        // User= the service runs as
 	Port        int           // --port passed to the exporter
@@ -32,20 +29,8 @@ type ServiceConfig struct {
 }
 
 func (c *ServiceConfig) setDefaults() {
-	if c.Module == "" {
-		c.Module = Module
-	}
-	if c.Version == "" {
-		c.Version = "latest"
-	}
-	if c.BinName == "" {
-		c.BinName = "gitlab-procs-exporter"
-	}
-	if c.InstallDir == "" {
-		c.InstallDir = "/usr/local/bin"
-	}
 	if c.ServiceName == "" {
-		c.ServiceName = "gitlab-procs-exporter"
+		c.ServiceName = binaryName
 	}
 	if c.ServiceUser == "" {
 		c.ServiceUser = "root"
@@ -58,8 +43,20 @@ func (c *ServiceConfig) setDefaults() {
 	}
 }
 
-func (c ServiceConfig) binaryPath() string {
-	return filepath.Join(c.InstallDir, c.BinName)
+// resolveExecPath returns the path to write into ExecStart: the configured
+// value, else the running executable (symlinks resolved), else the default
+// /usr/bin/<binaryName> deb install location.
+func resolveExecPath(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	if exe, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			return resolved
+		}
+		return exe
+	}
+	return "/usr/bin/" + binaryName
 }
 
 func (c ServiceConfig) unitPath() string {
@@ -77,7 +74,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={{.BinaryPath}} --port={{.Port}} --interval={{.Interval}}
+ExecStart={{.ExecPath}} --port={{.Port}} --interval={{.Interval}}
 User={{.ServiceUser}}
 Restart=on-failure
 RestartSec=5
@@ -108,13 +105,13 @@ func renderUnitFile(cfg ServiceConfig) (string, error) {
 	var b strings.Builder
 	data := struct {
 		Module      string
-		BinaryPath  string
+		ExecPath    string
 		Port        int
 		Interval    string
 		ServiceUser string
 	}{
-		Module:      cfg.Module,
-		BinaryPath:  cfg.binaryPath(),
+		Module:      Module,
+		ExecPath:    resolveExecPath(cfg.ExecPath),
 		Port:        cfg.Port,
 		Interval:    cfg.Interval.String(),
 		ServiceUser: cfg.ServiceUser,
@@ -125,9 +122,10 @@ func renderUnitFile(cfg ServiceConfig) (string, error) {
 	return b.String(), nil
 }
 
-// InstallService builds the exporter with `go install` and installs it as a
-// systemd service: writes the unit file, then daemon-reload / enable --now.
-// Progress is written to w. It requires Linux and root privileges.
+// InstallService installs the exporter as a systemd service: it writes a unit
+// file whose ExecStart points at the running binary, then daemon-reload /
+// enable --now. The binary itself is expected to already be installed (e.g.
+// via the .deb). Requires Linux and root privileges.
 func InstallService(w io.Writer, cfg ServiceConfig) error {
 	cfg.setDefaults()
 	logf := func(format string, a ...any) { fmt.Fprintf(w, "==> "+format+"\n", a...) }
@@ -136,28 +134,19 @@ func InstallService(w io.Writer, cfg ServiceConfig) error {
 		return fmt.Errorf("systemd deployment is only supported on Linux (this host is %s)", runtime.GOOS)
 	}
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("must run as root (try: sudo %s --deploy-as-systemd-service)", cfg.BinName)
+		return fmt.Errorf("must run as root (try: sudo %s --deploy-as-systemd-service)", binaryName)
 	}
 	systemctl, err := exec.LookPath("systemctl")
 	if err != nil {
-		return fmt.Errorf("systemctl not found; this installer targets systemd-based systems: %w", err)
+		return fmt.Errorf("systemctl not found; this targets systemd-based systems: %w", err)
 	}
-	goBin, err := findGo()
-	if err != nil {
-		return err
-	}
-	logf("using go: %s", goBin)
-
 	if cfg.ServiceUser != "root" {
 		if _, err := exec.Command("id", "--", cfg.ServiceUser).CombinedOutput(); err != nil {
 			return fmt.Errorf("service user %q does not exist (create it or use ServiceUser=root)", cfg.ServiceUser)
 		}
 	}
 
-	logf("installing %s@%s -> %s", cfg.Module, cfg.Version, cfg.binaryPath())
-	if err := goInstall(w, goBin, cfg); err != nil {
-		return err
-	}
+	logf("ExecStart -> %s", resolveExecPath(cfg.ExecPath))
 	if err := writeUnit(w, cfg); err != nil {
 		return err
 	}
@@ -177,26 +166,6 @@ func InstallService(w io.Writer, cfg ServiceConfig) error {
 	return nil
 }
 
-// goInstall runs `go install <module>@<version>` into cfg.InstallDir and
-// confirms the binary landed. GOBIN pins the output location; GOFLAGS is
-// cleared so caller flags do not leak in; GOTOOLCHAIN=auto lets go fetch a
-// newer toolchain when the module requires one.
-func goInstall(w io.Writer, goBin string, cfg ServiceConfig) error {
-	if err := os.MkdirAll(cfg.InstallDir, 0o755); err != nil {
-		return fmt.Errorf("creating install dir %s: %w", cfg.InstallDir, err)
-	}
-	cmd := exec.Command(goBin, "install", cfg.Module+"@"+cfg.Version)
-	cmd.Env = append(os.Environ(), "GOBIN="+cfg.InstallDir, "GOFLAGS=", "GOTOOLCHAIN=auto")
-	cmd.Stdout, cmd.Stderr = w, w
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("go install failed: %w", err)
-	}
-	if _, err := os.Stat(cfg.binaryPath()); err != nil {
-		return fmt.Errorf("binary not found after install at %s: %w", cfg.binaryPath(), err)
-	}
-	return nil
-}
-
 // writeUnit renders and writes the systemd unit file for cfg.
 func writeUnit(w io.Writer, cfg ServiceConfig) error {
 	unit, err := renderUnitFile(cfg)
@@ -210,13 +179,10 @@ func writeUnit(w io.Writer, cfg ServiceConfig) error {
 	return nil
 }
 
-// UninstallService reverses InstallService: it stops and disables the systemd
-// unit, removes the unit file, reloads systemd, and deletes the installed
-// binary. It is idempotent — artifacts that are already gone are reported and
-// skipped rather than treated as errors. Requires Linux and root.
-//
-// Only the unit file and the binary this tool installs are touched; the
-// exporter is flag-configured and has no other on-disk config to remove.
+// UninstallService removes the systemd service: it stops and disables the
+// unit, removes the unit file, and reloads systemd. It is idempotent. It does
+// NOT remove the binary, which is owned by dpkg — use `dpkg -r` for that.
+// Requires Linux and root.
 func UninstallService(w io.Writer, cfg ServiceConfig) error {
 	cfg.setDefaults()
 	logf := func(format string, a ...any) { fmt.Fprintf(w, "==> "+format+"\n", a...) }
@@ -225,7 +191,7 @@ func UninstallService(w io.Writer, cfg ServiceConfig) error {
 		return fmt.Errorf("systemd uninstall is only supported on Linux (this host is %s)", runtime.GOOS)
 	}
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("must run as root (try: sudo %s --uninstall)", cfg.BinName)
+		return fmt.Errorf("must run as root (try: sudo %s --uninstall)", binaryName)
 	}
 	systemctl, err := exec.LookPath("systemctl")
 	if err != nil {
@@ -234,25 +200,19 @@ func UninstallService(w io.Writer, cfg ServiceConfig) error {
 
 	unit := cfg.ServiceName + ".service"
 
-	// Stop + disable. Best-effort: the unit may already be absent.
 	logf("stopping and disabling %s", unit)
 	if err := runCmd(w, systemctl, "disable", "--now", unit); err != nil {
 		logf("disable --now reported: %v (continuing)", err)
 	}
-
 	if err := removeIfPresent(w, cfg.unitPath()); err != nil {
 		return err
 	}
-
 	logf("reloading systemd")
 	_ = runCmd(w, systemctl, "daemon-reload")
 	_ = runCmd(w, systemctl, "reset-failed", unit)
 
-	if err := removeIfPresent(w, cfg.binaryPath()); err != nil {
-		return err
-	}
-
-	fmt.Fprintf(w, "\nDone. %s has been removed.\n", cfg.ServiceName)
+	fmt.Fprintf(w, "\nDone. The %s service has been removed.\n", cfg.ServiceName)
+	fmt.Fprintf(w, "The binary is managed by dpkg; to remove the package run: dpkg -r %s\n", binaryName)
 	return nil
 }
 
@@ -273,22 +233,4 @@ func runCmd(w io.Writer, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout, cmd.Stderr = w, w
 	return cmd.Run()
-}
-
-// findGo locates the go toolchain, probing common install locations because
-// root's PATH under sudo often omits where Go was installed.
-func findGo() (string, error) {
-	if p, err := exec.LookPath("go"); err == nil {
-		return p, nil
-	}
-	cands := []string{"/usr/local/go/bin/go", "/usr/lib/go/bin/go", "/snap/bin/go"}
-	if su := os.Getenv("SUDO_USER"); su != "" {
-		cands = append(cands, filepath.Join("/home", su, "go", "bin", "go"))
-	}
-	for _, c := range cands {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
-			return c, nil
-		}
-	}
-	return "", fmt.Errorf("go toolchain not found; run --check-dependencies first")
 }

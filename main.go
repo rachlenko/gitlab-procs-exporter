@@ -34,19 +34,15 @@ func main() {
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 
 	checkDeps := flag.Bool("check-dependencies", false,
-		"Verify the toolchain and environment can run `go install`, then exit")
+		"Verify prerequisites (curl or wget) for --update, then exit")
 	deploySystemd := flag.Bool("deploy-as-systemd-service", false,
 		"Install the exporter as a systemd service (Linux, requires root), then exit")
 	uninstall := flag.Bool("uninstall", false,
-		"Stop/disable the systemd service and remove its unit file and binary (Linux, requires root), then exit")
+		"Stop/disable the systemd service and remove its unit file (Linux, requires root), then exit")
 	update := flag.Bool("update", false,
-		"Install the latest version and enable + restart the systemd service (Linux, requires root), then exit")
-	serviceVersion := flag.String("service-version", "latest",
-		"Module version to install for --deploy-as-systemd-service")
-	installDir := flag.String("install-dir", "/usr/local/bin",
-		"Directory the binary is installed into for --deploy-as-systemd-service")
+		"Update to the latest release .deb via dpkg and restart the service (Linux, requires root), then exit")
 	serviceName := flag.String("service-name", "gitlab-procs-exporter",
-		"systemd unit name for --deploy-as-systemd-service")
+		"systemd unit name")
 	serviceUser := flag.String("service-user", "root",
 		"User the service runs as (root is required to read all processes' env/IO)")
 	flag.Parse()
@@ -67,8 +63,6 @@ func main() {
 
 	if *deploySystemd {
 		err := deploy.InstallService(os.Stdout, deploy.ServiceConfig{
-			Version:     *serviceVersion,
-			InstallDir:  *installDir,
 			ServiceName: *serviceName,
 			ServiceUser: *serviceUser,
 			Port:        *port,
@@ -82,7 +76,6 @@ func main() {
 
 	if *uninstall {
 		err := deploy.UninstallService(os.Stdout, deploy.ServiceConfig{
-			InstallDir:  *installDir,
 			ServiceName: *serviceName,
 		})
 		if err != nil {
@@ -93,11 +86,7 @@ func main() {
 
 	if *update {
 		err := deploy.UpdateService(os.Stdout, deploy.ServiceConfig{
-			InstallDir:  *installDir,
 			ServiceName: *serviceName,
-			ServiceUser: *serviceUser,
-			Port:        *port,
-			Interval:    *scrapeInterval,
 		})
 		if err != nil {
 			log.Fatalf("update failed: %v", err)

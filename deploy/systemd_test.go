@@ -15,14 +15,8 @@ import (
 func TestServiceConfigDefaults(t *testing.T) {
 	var c ServiceConfig
 	c.setDefaults()
-	if c.Module != Module {
-		t.Errorf("Module = %q, want %q", c.Module, Module)
-	}
-	if c.Version != "latest" {
-		t.Errorf("Version = %q, want latest", c.Version)
-	}
-	if c.InstallDir != "/usr/local/bin" {
-		t.Errorf("InstallDir = %q", c.InstallDir)
+	if c.ServiceName != binaryName {
+		t.Errorf("ServiceName = %q, want %q", c.ServiceName, binaryName)
 	}
 	if c.ServiceUser != "root" {
 		t.Errorf("ServiceUser = %q", c.ServiceUser)
@@ -32,9 +26,6 @@ func TestServiceConfigDefaults(t *testing.T) {
 	}
 	if c.Interval != time.Minute {
 		t.Errorf("Interval = %v, want 1m", c.Interval)
-	}
-	if got := c.binaryPath(); got != "/usr/local/bin/gitlab-procs-exporter" {
-		t.Errorf("binaryPath = %q", got)
 	}
 }
 
@@ -51,7 +42,7 @@ func TestUnitPathUsesSystemdDir(t *testing.T) {
 
 func TestRenderUnitFile(t *testing.T) {
 	c := ServiceConfig{
-		InstallDir:  "/opt/bin",
+		ExecPath:    "/usr/bin/gitlab-procs-exporter",
 		Port:        9100,
 		Interval:    90 * time.Second,
 		ServiceUser: "root",
@@ -65,7 +56,7 @@ func TestRenderUnitFile(t *testing.T) {
 		"[Service]",
 		"[Install]",
 		"Type=simple",
-		"ExecStart=/opt/bin/gitlab-procs-exporter --port=9100 --interval=1m30s",
+		"ExecStart=/usr/bin/gitlab-procs-exporter --port=9100 --interval=1m30s",
 		"User=root",
 		"Restart=on-failure",
 		"WantedBy=multi-user.target",
