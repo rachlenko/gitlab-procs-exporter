@@ -37,15 +37,17 @@ To solve this, before the pipeline runner forcefully terminates the job, the wor
 
 ## 1. Running the Exporter
 
-### Install with `go install`
-The fastest way to get the binary onto your `PATH` (requires Go 1.24+):
+### Install from the `.deb` release
+Download the `.deb` for your architecture from the
+[latest release](https://github.com/rachlenko/gitlab-procs-exporter/releases/latest)
+and install it (the binary lands in `/usr/bin`):
 ```bash
-go install github.com/rachlenko/gitlab-procs-exporter@latest
-```
-The dashboard SPA is embedded in the binary, so no extra assets are needed. The installed binary lands in `$(go env GOPATH)/bin` — make sure that directory is on your `PATH`. Check the build with:
-```bash
+curl -fsSLO https://github.com/rachlenko/gitlab-procs-exporter/releases/latest/download/gitlab-procs-exporter_<ver>_linux_amd64.deb
+sudo dpkg -i gitlab-procs-exporter_<ver>_linux_amd64.deb
+# (dpkg -i needs a local file, not a URL; `sudo apt-get install -y ./<file>.deb` also works and resolves deps)
 gitlab-procs-exporter --version
 ```
+The dashboard SPA is embedded in the binary, so no extra assets are needed.
 
 ### Local Compilation
 ```bash
@@ -53,45 +55,33 @@ go build -o gitlab-procs-exporter
 ```
 
 ### Bootstrapping on a Host
-The binary can verify its own prerequisites and install itself as a systemd
-service — no separate scripts required.
+The binary manages its own systemd service.
 
-*   **Check dependencies** (Go toolchain ≥ 1.24, `git`, CA trust store, writable
-    install dir, network reachability to the module proxy). Exits non-zero if a
-    required dependency is missing:
+*   **Check dependencies** — verifies a downloader (`curl` or `wget`) is present
+    (needed by `--update`):
     ```bash
     gitlab-procs-exporter --check-dependencies
     ```
-*   **Install as a systemd service** (Linux, run as root). Re-installs the module
-    with `go install`, writes a unit file to `/etc/systemd/system`, then
-    `daemon-reload` + `enable --now`:
+*   **Install as a systemd service** (Linux, run as root). Writes a unit whose
+    `ExecStart` points at the installed binary, then enables and starts it:
     ```bash
-    sudo gitlab-procs-exporter --deploy-as-systemd-service \
-      --service-version=latest --port=8000 --interval=1m
+    sudo gitlab-procs-exporter --deploy-as-systemd-service --port=8000 --interval=1m
     ```
-    Tunable flags: `--service-version`, `--install-dir` (default `/usr/local/bin`),
-    `--service-name`, `--service-user` (default `root` — required to read every
-    process's environment and I/O counters), plus `--port` and `--interval` which
-    are baked into the unit's `ExecStart`.
+    Tunable: `--service-name`, `--service-user` (default `root`, required to read
+    every process's environment and I/O), `--port`, `--interval`.
 
-*   **Update** (Linux, run as root). Installs the latest published version,
-    (re)writes the unit file, then enables and **restarts** the service so the
-    new binary takes effect (a plain `enable --now` would not restart an
-    already-running service):
+*   **Update** (Linux, run as root). Downloads the latest release `.deb` from
+    GitHub, installs it with `dpkg`, and restarts the service:
     ```bash
     sudo gitlab-procs-exporter --update
     ```
-    Honors `--install-dir`, `--service-name`, `--service-user`, `--port`, and
-    `--interval`.
 
-*   **Uninstall** (Linux, run as root). Stops and disables the service, removes
-    its unit file, reloads systemd, and deletes the installed binary. Idempotent
-    — safe to run even if nothing is installed:
+*   **Uninstall** (Linux, run as root). Stops/disables the service and removes its
+    unit file. The binary is managed by dpkg — remove it with `dpkg -r`:
     ```bash
     sudo gitlab-procs-exporter --uninstall
+    sudo dpkg -r gitlab-procs-exporter   # to also remove the binary
     ```
-    Honors `--install-dir` and `--service-name` so a non-default install can be
-    removed cleanly.
 
 ### Changing the Collection Frequency
 You can control the interval at which the background scraper sweeps system processes using the `--interval` command-line flag. 
