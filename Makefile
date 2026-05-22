@@ -39,4 +39,41 @@ version:
 	@echo "branch: $(BRANCH), hash: $(HASH), timestamp: $(TIMESTAMP)"
 	@echo "revision: $(REV)"
 
-.PHONY: all build test lint fmt race version
+# Latest semver tag, used to auto-bump the patch version for `make release`.
+LATEST_TAG=$(shell git describe --tags --abbrev=0 2>/dev/null)
+
+# Tag and push the next version, then let CI (.github/workflows/release.yml)
+# build the release artifacts. By default it bumps the patch of the latest tag;
+# override with an explicit version, e.g. `make release VERSION=v1.2.0`.
+# Guards: clean working tree, on `main`, and the tag must not already exist.
+release: test
+	@test -z "$$(git status --porcelain)" || { echo "error: working tree not clean; commit first"; exit 1; }
+	@branch=$$(git rev-parse --abbrev-ref HEAD); \
+	 [ "$$branch" = "main" ] || { echo "error: must be on main (currently on $$branch)"; exit 1; }
+	@version="$(VERSION)"; \
+	 if [ -z "$$version" ]; then \
+	   latest="$(LATEST_TAG)"; \
+	   if [ -z "$$latest" ]; then \
+	     version="v0.0.1"; \
+	   else \
+	     v=$${latest#v}; \
+	     major=$$(echo "$$v" | cut -d. -f1); \
+	     minor=$$(echo "$$v" | cut -d. -f2); \
+	     patch=$$(echo "$$v" | cut -d. -f3); \
+	     version="v$$major.$$minor.$$((patch + 1))"; \
+	   fi; \
+	 fi; \
+	 case "$$version" in \
+	   v[0-9]*.[0-9]*.[0-9]*) ;; \
+	   *) echo "error: VERSION '$$version' must look like vX.Y.Z"; exit 1;; \
+	 esac; \
+	 if git rev-parse "$$version" >/dev/null 2>&1; then \
+	   echo "error: tag $$version already exists"; exit 1; \
+	 fi; \
+	 echo "==> releasing $$version (from $(LATEST_TAG))"; \
+	 git push origin main; \
+	 git tag -a "$$version" -m "Release $$version"; \
+	 git push origin "$$version"; \
+	 echo "==> pushed $$version; CI will build the release artifacts"
+
+.PHONY: all build test lint fmt race version release
