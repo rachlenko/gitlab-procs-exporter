@@ -179,9 +179,10 @@ func writeUnit(w io.Writer, cfg ServiceConfig) error {
 	return nil
 }
 
-// UninstallService removes the systemd service: it stops and disables the
-// unit, removes the unit file, and reloads systemd. It is idempotent. It does
-// NOT remove the binary, which is owned by dpkg — use `dpkg -r` for that.
+// UninstallService removes the systemd service and the dpkg package: it stops
+// and disables the unit, removes the unit file, reloads systemd, and then runs
+// `dpkg -r` to remove the package that owns the binary. It is idempotent —
+// missing artifacts and an already-removed package are skipped, not errors.
 // Requires Linux and root.
 func UninstallService(w io.Writer, cfg ServiceConfig) error {
 	cfg.setDefaults()
@@ -211,8 +212,23 @@ func UninstallService(w io.Writer, cfg ServiceConfig) error {
 	_ = runCmd(w, systemctl, "daemon-reload")
 	_ = runCmd(w, systemctl, "reset-failed", unit)
 
-	fmt.Fprintf(w, "\nDone. The %s service has been removed.\n", cfg.ServiceName)
-	fmt.Fprintf(w, "The binary is managed by dpkg; to remove the package run: dpkg -r %s\n", binaryName)
+	// Remove the dpkg package that owns the binary. `dpkg -r` is the correct,
+	// DB-safe way to delete a package-managed file (a manual rm would leave the
+	// dpkg database inconsistent).
+	if dpkg, err := exec.LookPath("dpkg"); err == nil {
+		if dpkgInstalled(dpkg, binaryName) {
+			logf("removing dpkg package %s", binaryName)
+			if err := runCmd(w, dpkg, "-r", binaryName); err != nil {
+				return fmt.Errorf("dpkg -r %s: %w", binaryName, err)
+			}
+		} else {
+			logf("dpkg package %s is not installed; nothing to remove", binaryName)
+		}
+	} else {
+		logf("dpkg not found; if the binary was installed outside dpkg, remove it manually")
+	}
+
+	fmt.Fprintf(w, "\nDone. The %s service and package have been removed.\n", cfg.ServiceName)
 	return nil
 }
 

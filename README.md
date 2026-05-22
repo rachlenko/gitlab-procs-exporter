@@ -76,11 +76,10 @@ The binary manages its own systemd service.
     sudo gitlab-procs-exporter --update
     ```
 
-*   **Uninstall** (Linux, run as root). Stops/disables the service and removes its
-    unit file. The binary is managed by dpkg — remove it with `dpkg -r`:
+*   **Uninstall** (Linux, run as root). Stops/disables the service, removes its
+    unit file, and removes the dpkg package (the binary) via `dpkg -r`:
     ```bash
     sudo gitlab-procs-exporter --uninstall
-    sudo dpkg -r gitlab-procs-exporter   # to also remove the binary
     ```
 
 ### Changing the Collection Frequency

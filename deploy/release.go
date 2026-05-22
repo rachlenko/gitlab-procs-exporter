@@ -184,6 +184,22 @@ func UpdateService(w io.Writer, cfg ServiceConfig) error {
 	return nil
 }
 
+// dpkgInstalled reports whether pkg is currently installed (Status "install
+// ok installed"), as opposed to absent or in the config-files state left
+// behind by a prior removal.
+func dpkgInstalled(dpkg, pkg string) bool {
+	out, err := exec.Command(dpkg, "-s", pkg).Output()
+	if err != nil {
+		return false
+	}
+	return parseDpkgInstalled(string(out))
+}
+
+// parseDpkgInstalled checks `dpkg -s` output for the installed status line.
+func parseDpkgInstalled(statusOutput string) bool {
+	return strings.Contains(statusOutput, "Status: install ok installed")
+}
+
 // binaryVersion reports the --version output of the binary at path, or
 // "unknown" if it cannot be run.
 func binaryVersion(path string) string {

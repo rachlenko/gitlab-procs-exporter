@@ -57,6 +57,20 @@ func TestPickDebAsset(t *testing.T) {
 	}
 }
 
+func TestParseDpkgInstalled(t *testing.T) {
+	installed := "Package: gitlab-procs-exporter\nStatus: install ok installed\nVersion: 0.0.5\n"
+	configFiles := "Package: gitlab-procs-exporter\nStatus: deinstall ok config-files\n"
+	if !parseDpkgInstalled(installed) {
+		t.Error("expected true for 'install ok installed'")
+	}
+	if parseDpkgInstalled(configFiles) {
+		t.Error("expected false for config-files state")
+	}
+	if parseDpkgInstalled("") {
+		t.Error("expected false for empty output")
+	}
+}
+
 func TestLatestRelease(t *testing.T) {
 	orig := httpGet
 	t.Cleanup(func() { httpGet = orig })
