@@ -37,6 +37,16 @@ To solve this, before the pipeline runner forcefully terminates the job, the wor
 
 ## 1. Running the Exporter
 
+### Install with `go install`
+The fastest way to get the binary onto your `PATH` (requires Go 1.24+):
+```bash
+go install github.com/rachlenko/gitlab-procs-exporter@latest
+```
+The dashboard SPA is embedded in the binary, so no extra assets are needed. The installed binary lands in `$(go env GOPATH)/bin` — make sure that directory is on your `PATH`. Check the build with:
+```bash
+gitlab-procs-exporter --version
+```
+
 ### Local Compilation
 ```bash
 go build -o gitlab-procs-exporter

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"gitlab-procs-exporter/exporter"
+	"github.com/rachlenko/gitlab-procs-exporter/exporter"
 
 	"github.com/shirou/gopsutil/v3/process"
 )

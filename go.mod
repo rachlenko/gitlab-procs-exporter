@@ -1,4 +1,4 @@
-module gitlab-procs-exporter
+module github.com/rachlenko/gitlab-procs-exporter
 
 go 1.24.0
 

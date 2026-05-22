@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
-	"gitlab-procs-exporter/exporter"
+	"github.com/rachlenko/gitlab-procs-exporter/exporter"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -20,10 +21,21 @@ import (
 //go:embed dashboard/index.html
 var dashboardHTML embed.FS
 
+// revision is injected at build time via -ldflags "-X main.revision=...".
+// When the binary is produced by `go install module@version`, it stays "dev"
+// here and the real version is recovered from the embedded build info instead.
+var revision = "dev"
+
 func main() {
 	port := flag.Int("port", 8000, "Port to run the exporter on")
 	scrapeInterval := flag.Duration("interval", 10*time.Second, "Scrape interval")
+	showVersion := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version())
+		return
+	}
 
 	store := exporter.NewHistoryStore()
 
@@ -44,13 +56,25 @@ func main() {
 		serveAPIHistory(w, r, store)
 	})
 
-	log.Printf("Starting GitLab Process History Exporter on :%d", *port)
+	log.Printf("Starting GitLab Process History Exporter %s on :%d", version(), *port)
 	log.Printf("Embedded web dashboard available at http://localhost:%d/", *port)
 	log.Printf("Prometheus metrics endpoint available at http://localhost:%d/metrics", *port)
 
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", *port), nil); err != nil {
 		log.Fatalf("Error starting HTTP server: %v", err)
 	}
+}
+
+// version reports the build revision. It prefers the ldflags-injected value
+// and otherwise falls back to the module version recorded by `go install`.
+func version() string {
+	if revision != "dev" {
+		return revision
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return revision
 }
 
 func serveDashboard(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +100,7 @@ func serveAPIProcesses(w http.ResponseWriter, r *http.Request, store *exporter.H
 
 func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	pidStr := r.URL.Query().Get("pid")
 	nameStr := r.URL.Query().Get("name")
 
@@ -185,18 +209,18 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process) 
 
 		// Add sample to HistoryStore
 		store.AddSample(exporter.ProcessSample{
-			Timestamp:   now,
-			PID:         pid,
-			Name:        name,
-			CmdLine:     cmdline,
-			Environ:     environMap,
-			CPUUsage:    cpuUsage,
-			MemoryRSS:   rss,
-			MemoryVMS:   vms,
-			IORead:      ioRead,
-			IOWrite:     ioWrite,
-			CreateTime:  createTime,
-			IsActive:    true,
+			Timestamp:  now,
+			PID:        pid,
+			Name:       name,
+			CmdLine:    cmdline,
+			Environ:    environMap,
+			CPUUsage:   cpuUsage,
+			MemoryRSS:  rss,
+			MemoryVMS:  vms,
+			IORead:     ioRead,
+			IOWrite:    ioWrite,
+			CreateTime: createTime,
+			IsActive:   true,
 		})
 	}
 
