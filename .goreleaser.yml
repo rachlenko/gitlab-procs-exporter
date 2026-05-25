@@ -26,9 +26,9 @@ nfpms:
     package_name: gitlab-procs-exporter
     builds:
       - gitlab-procs-exporter
-    vendor: Sunrise
-    homepage: https://github.com/sunrise/gitlab-procs-exporter
-    maintainer: Sunrise Team <support@sunrise.com>
+    vendor: rachlenko
+    homepage: https://github.com/rachlenko/gitlab-procs-exporter
+    maintainer: Evgeny Rachlenko <evgeny.rachlenko@gmail.com>
     description: Prometheus process exporter with active 10m sliding history window and dynamic dashboard
     license: MIT
     formats:
