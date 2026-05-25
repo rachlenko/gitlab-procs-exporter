@@ -1,9 +1,9 @@
 # GitLab Process History Exporter
 
-[![CI Status](https://github.com/sunrise/gitlab-procs-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/sunrise/gitlab-procs-exporter/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/sunrise/gitlab-procs-exporter)](https://goreportcard.com/report/github.com/sunrise/gitlab-procs-exporter)
-[![Go Reference](https://pkg.go.dev/badge/github.com/sunrise/gitlab-procs-exporter.svg)](https://pkg.go.dev/github.com/sunrise/gitlab-procs-exporter)
-[![Docker Image](https://img.shields.io/badge/docker%20image-compatible-blue.svg?logo=docker)](https://github.com/sunrise/gitlab-procs-exporter/pkgs/container/gitlab-procs-exporter)
+[![CI Status](https://github.com/rachlenko/gitlab-procs-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/rachlenko/gitlab-procs-exporter/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rachlenko/gitlab-procs-exporter)](https://goreportcard.com/report/github.com/rachlenko/gitlab-procs-exporter)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rachlenko/gitlab-procs-exporter.svg)](https://pkg.go.dev/github.com/rachlenko/gitlab-procs-exporter)
+[![Docker Image](https://img.shields.io/badge/docker%20image-compatible-blue.svg?logo=docker)](https://github.com/rachlenko/gitlab-procs-exporter/pkgs/container/gitlab-procs-exporter)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A highly optimized, cross-platform Prometheus exporter designed to track and retain Linux process-level telemetries (CPU, memory, and I/O) along with command-line arguments and environment variables inside an in-memory sliding-window history store.
@@ -19,7 +19,7 @@ Although named `gitlab-procs-exporter` for historical reasons, this tool is full
 ### Diagnosing Hung CI Jobs
 The primary motivation behind this project is to diagnose stuck or hung CI/CD pipeline jobs that fail to complete for unclear reasons. When a job hits its timeout limit, developers often lack high-resolution, granular system diagnostics (CPU, Memory, Disk I/O, environment states) at the exact moment of failure.
 
-To solve this, before the pipeline runner forcefully terminates the job, the workflow can programmatically query the Prometheus server. Thanks to the fact that standard environment variables like `CI_JOB_ID` and `CI_JOB_NAME` are injected directly into the running process environment (and thus tracked by this exporter), the query will precisely isolate and return the high-resolution timeline telemetry for only the specific stuck process out of all concurrently running runner processes. Once this diagnostics packet is archived or queried, the job can be safely terminated.
+To solve this, before the pipeline runner forcefully terminates the job, the workflow can programmatically query the Prometheus server. Thanks to the fact that standard environment variables like `CI_JOB_ID` and `CI_JOB_NAME` are injected directly into the running process environment (and thus tracked by this exporter), the query will precisely isolate and return the high-resolution timeline telemetry for only the specific stuck process out of all concurrently running runner processes. Once this diagnostic packet is archived or queried, the job can be safely terminated.
 
 > [!NOTE]
 > **Operational Storage Warning**: Transmitting high-resolution process telemetry to Prometheus introduces a larger data footprint. Operating teams must ensure that their Prometheus storage retention and compression policies are correctly configured to prevent high-cardinality storage growth or overflow. Managing Prometheus TSDB storage retention is outside the scope of this project.
