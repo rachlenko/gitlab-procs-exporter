@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -141,7 +142,7 @@ func InstallService(w io.Writer, cfg ServiceConfig) error {
 		return fmt.Errorf("systemctl not found; this targets systemd-based systems: %w", err)
 	}
 	if cfg.ServiceUser != "root" {
-		if _, err := exec.Command("id", "--", cfg.ServiceUser).CombinedOutput(); err != nil {
+		if _, err := exec.CommandContext(context.Background(), "id", "--", cfg.ServiceUser).CombinedOutput(); err != nil {
 			return fmt.Errorf("service user %q does not exist (create it or use ServiceUser=root)", cfg.ServiceUser)
 		}
 	}
@@ -173,7 +174,8 @@ func writeUnit(w io.Writer, cfg ServiceConfig) error {
 		return fmt.Errorf("rendering unit file: %w", err)
 	}
 	fmt.Fprintf(w, "==> writing unit file: %s\n", cfg.unitPath())
-	if err := os.WriteFile(cfg.unitPath(), []byte(unit), 0o644); err != nil {
+	// systemd unit files are world-readable by convention (0644); they hold no secrets.
+	if err := os.WriteFile(cfg.unitPath(), []byte(unit), 0o644); err != nil { //nolint:gosec // G306: unit files are world-readable by convention
 		return fmt.Errorf("writing unit file: %w", err)
 	}
 	return nil
@@ -246,7 +248,7 @@ func removeIfPresent(w io.Writer, path string) error {
 }
 
 func runCmd(w io.Writer, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...)
 	cmd.Stdout, cmd.Stderr = w, w
 	return cmd.Run()
 }

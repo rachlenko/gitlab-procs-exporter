@@ -42,7 +42,7 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		PID:        4567,
 		Name:       "sidekiq-worker",
 		CmdLine:    "sidekiq -c 10",
-		Environ:    map[string]string{"DB_PASSWORD": "unsafe-pwd-here", "USER": "gitlab"},
+		Environ:    map[string]string{"DB_PASSWORD": "unsafe-pwd-here", "USER": "gitlab"}, //nolint:gosec // G101: fake secret to exercise redaction
 		CPUUsage:   45.2,
 		MemoryRSS:  200 * 1024 * 1024,
 		MemoryVMS:  400 * 1024 * 1024,
@@ -84,17 +84,6 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		descStr := m.Desc().String()
 		if strings.Contains(descStr, "gitlab_process_info") {
 			hasInfoMetric = true
-		}
-
-		// Verify the contents of the metric by writing it to a mock DTO
-		var dto prometheus.Metric
-		dto = m
-
-		// String serialization checks
-		repr := dto.Desc().String()
-		if strings.Contains(repr, "gitlab_process_info") {
-			// In Go, Prometheus MustNewConstMetric includes labels inside its serialized structure or Desc string representation.
-			// Let's verify that the collector ran completely without crashing.
 		}
 	}
 

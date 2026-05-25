@@ -218,7 +218,7 @@ func TestConcurrentSafety(t *testing.T) {
 		go func(workerID int) {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				pid := int32(1000 + workerID)
+				pid := int32(1000 + workerID) //nolint:gosec // G115: workerID is bounded by the test loop
 				sample := ProcessSample{
 					Timestamp:  time.Now(),
 					PID:        pid,

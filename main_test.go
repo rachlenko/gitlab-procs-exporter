@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,7 @@ import (
 
 func TestServeDashboard(t *testing.T) {
 	// Test valid GET /
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	rr := httptest.NewRecorder()
 
 	serveDashboard(rr, req)
@@ -34,7 +35,7 @@ func TestServeDashboard(t *testing.T) {
 	}
 
 	// Test 404 for undefined path
-	req404 := httptest.NewRequest("GET", "/some-random-route", nil)
+	req404 := httptest.NewRequestWithContext(context.Background(), "GET", "/some-random-route", nil)
 	rr404 := httptest.NewRecorder()
 
 	serveDashboard(rr404, req404)
@@ -56,7 +57,7 @@ func TestServeAPIProcesses(t *testing.T) {
 	}
 	store.AddSample(sample)
 
-	req := httptest.NewRequest("GET", "/api/processes", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/processes", nil)
 	rr := httptest.NewRecorder()
 
 	serveAPIProcesses(rr, req, store)
@@ -96,7 +97,7 @@ func TestServeAPIHistory(t *testing.T) {
 	store.AddSample(sample)
 
 	// Case 1: Missing both parameters
-	req1 := httptest.NewRequest("GET", "/api/history", nil)
+	req1 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history", nil)
 	rr1 := httptest.NewRecorder()
 
 	serveAPIHistory(rr1, req1, store)
@@ -106,7 +107,7 @@ func TestServeAPIHistory(t *testing.T) {
 	}
 
 	// Case 2: Query by PID
-	req2 := httptest.NewRequest("GET", "/api/history?pid=3333", nil)
+	req2 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history?pid=3333", nil)
 	rr2 := httptest.NewRecorder()
 
 	serveAPIHistory(rr2, req2, store)
@@ -125,7 +126,7 @@ func TestServeAPIHistory(t *testing.T) {
 	}
 
 	// Case 3: Query by Name
-	req3 := httptest.NewRequest("GET", "/api/history?name=sidekiq", nil)
+	req3 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history?name=sidekiq", nil)
 	rr3 := httptest.NewRecorder()
 
 	serveAPIHistory(rr3, req3, store)

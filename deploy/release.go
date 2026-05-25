@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -105,9 +106,9 @@ func downloadFile(w io.Writer, url string) (string, error) {
 	var cmd *exec.Cmd
 	switch {
 	case lookPath("curl") != "":
-		cmd = exec.Command("curl", "-fsSL", "-o", path, url)
+		cmd = exec.CommandContext(context.Background(), "curl", "-fsSL", "-o", path, url)
 	case lookPath("wget") != "":
-		cmd = exec.Command("wget", "-q", "-O", path, url)
+		cmd = exec.CommandContext(context.Background(), "wget", "-q", "-O", path, url)
 	default:
 		_ = os.Remove(path)
 		return "", fmt.Errorf("neither curl nor wget found; run --check-dependencies")
@@ -166,7 +167,7 @@ func UpdateService(w io.Writer, cfg ServiceConfig) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(deb)
+	defer func() { _ = os.Remove(deb) }()
 
 	logf("installing %s with dpkg", asset.Name)
 	if err := runCmd(w, dpkg, "-i", deb); err != nil {
@@ -188,7 +189,7 @@ func UpdateService(w io.Writer, cfg ServiceConfig) error {
 // ok installed"), as opposed to absent or in the config-files state left
 // behind by a prior removal.
 func dpkgInstalled(dpkg, pkg string) bool {
-	out, err := exec.Command(dpkg, "-s", pkg).Output()
+	out, err := exec.CommandContext(context.Background(), dpkg, "-s", pkg).Output()
 	if err != nil {
 		return false
 	}
@@ -203,7 +204,7 @@ func parseDpkgInstalled(statusOutput string) bool {
 // binaryVersion reports the --version output of the binary at path, or
 // "unknown" if it cannot be run.
 func binaryVersion(path string) string {
-	out, err := exec.Command(path, "--version").Output()
+	out, err := exec.CommandContext(context.Background(), path, "--version").Output()
 	if err != nil {
 		return "unknown"
 	}

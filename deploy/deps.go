@@ -92,16 +92,16 @@ func AllPassed(results []CheckResult) bool {
 // PrintResults writes a human-readable report and summary to w.
 func PrintResults(w io.Writer, results []CheckResult) {
 	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	defer func() { _ = bw.Flush() }()
 
 	fmt.Fprintf(bw, "Checking prerequisites for %s\n\n", binaryName)
 	for _, r := range results {
 		fmt.Fprintf(bw, "  %s %-20s %s\n", r.Status.mark(), r.Name, r.Detail)
 	}
-	fmt.Fprintln(bw)
+	_, _ = fmt.Fprintln(bw)
 	if AllPassed(results) {
-		fmt.Fprintln(bw, "All required dependencies satisfied.")
+		_, _ = fmt.Fprintln(bw, "All required dependencies satisfied.")
 	} else {
-		fmt.Fprintln(bw, "Missing required dependencies — resolve the ✗ items above.")
+		_, _ = fmt.Fprintln(bw, "Missing required dependencies — resolve the ✗ items above.")
 	}
 }

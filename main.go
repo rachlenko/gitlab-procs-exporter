@@ -117,7 +117,11 @@ func main() {
 	log.Printf("Embedded web dashboard available at http://localhost:%d/", *port)
 	log.Printf("Prometheus metrics endpoint available at http://localhost:%d/metrics", *port)
 
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", *port), nil); err != nil {
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", *port),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("Error starting HTTP server: %v", err)
 	}
 }
@@ -146,13 +150,13 @@ func serveDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write(htmlBytes)
+	_, _ = w.Write(htmlBytes)
 }
 
 func serveAPIProcesses(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore) {
 	w.Header().Set("Content-Type", "application/json")
 	active := store.GetActiveProcesses()
-	json.NewEncoder(w).Encode(active)
+	_ = json.NewEncoder(w).Encode(active)
 }
 
 func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore) {
@@ -171,7 +175,7 @@ func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.His
 		return
 	}
 
-	json.NewEncoder(w).Encode(history)
+	_ = json.NewEncoder(w).Encode(history)
 }
 
 // Background scraper with process object reuse for CPU calculation accuracy
