@@ -9,23 +9,23 @@ import (
 
 // ProcessSample represents the state of a process at a specific point in time.
 type ProcessSample struct {
-	Timestamp   time.Time         `json:"timestamp"`
-	PID         int32             `json:"pid"`
-	Name        string            `json:"name"`
-	CmdLine     string            `json:"cmdline"`
-	Environ     map[string]string `json:"environ"`
-	CPUUsage    float64           `json:"cpu_usage"`    // CPU percentage usage
-	MemoryRSS   uint64            `json:"memory_rss"`   // RSS in bytes
-	MemoryVMS   uint64            `json:"memory_vms"`   // Virtual memory in bytes
-	IORead      uint64            `json:"io_read_bytes"`  // Cumulative bytes read
-	IOWrite     uint64            `json:"io_write_bytes"` // Cumulative bytes written
-	CreateTime  int64             `json:"create_time"`  // Process start time (epoch milliseconds)
-	IsActive    bool              `json:"is_active"`    // Whether the process is currently running
+	Timestamp  time.Time         `json:"timestamp"`
+	PID        int32             `json:"pid"`
+	Name       string            `json:"name"`
+	CmdLine    string            `json:"cmdline"`
+	Environ    map[string]string `json:"environ"`
+	CPUUsage   float64           `json:"cpu_usage"`      // CPU percentage usage
+	MemoryRSS  uint64            `json:"memory_rss"`     // RSS in bytes
+	MemoryVMS  uint64            `json:"memory_vms"`     // Virtual memory in bytes
+	IORead     uint64            `json:"io_read_bytes"`  // Cumulative bytes read
+	IOWrite    uint64            `json:"io_write_bytes"` // Cumulative bytes written
+	CreateTime int64             `json:"create_time"`    // Process start time (epoch milliseconds)
+	IsActive   bool              `json:"is_active"`      // Whether the process is currently running
 }
 
 // HistoryStore maintains process telemetry history for the last 10 minutes.
 type HistoryStore struct {
-	mu        sync.RWMutex
+	mu sync.RWMutex
 	// Maps process key ("pid-createtime") to historical samples
 	processes map[string][]ProcessSample
 	// Maps active PID to the current active process key

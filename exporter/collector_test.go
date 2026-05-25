@@ -89,7 +89,7 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		// Verify the contents of the metric by writing it to a mock DTO
 		var dto prometheus.Metric
 		dto = m
-		
+
 		// String serialization checks
 		repr := dto.Desc().String()
 		if strings.Contains(repr, "gitlab_process_info") {
@@ -112,7 +112,7 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		t.Fatal("expected at least one active process")
 	}
 	p := active[0]
-	
+
 	// Test the redaction logic directly as implemented in collector.go
 	var envPairs []string
 	for k, v := range p.Environ {
