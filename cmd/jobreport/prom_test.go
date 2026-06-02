@@ -24,7 +24,7 @@ func TestSelector(t *testing.T) {
 func TestTopNJoinAndSort(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// instant topk response, deliberately out of order
-		w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[
 			{"metric":{"name":"AppFirewallCore","pid":"23653","node_ip":"10.0.1.11"},"value":[1780259356,"3.87"]},
 			{"metric":{"name":"java","pid":"19991","node_ip":"10.0.1.11"},"value":[1780259356,"5.92"]}
 		]}}`))
@@ -53,7 +53,7 @@ func TestTopNJoinAndSort(t *testing.T) {
 func TestMetaMapKeepsRichest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// two series for the same pid: one with cmdline, one without (range query)
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
 			{"metric":{"node_ip":"10.0.1.11","pid":"22285"},"values":[[1,"1"]]},
 			{"metric":{"node_ip":"10.0.1.11","pid":"22285","cmdline":"/builds/glrtr-gW/0/AppBackendService JOB_ID=126741069","environ":"CI_JOB_NAME_SLUG=oracle-xml"},"values":[[1,"1"]]}
 		]}}`))
@@ -75,7 +75,7 @@ func TestResolveNodeByJobID(t *testing.T) {
 		if !strings.Contains(r.URL.RawQuery, "126741069") {
 			t.Errorf("query missing job id: %s", r.URL.RawQuery)
 		}
-		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
 			{"metric":{"node_ip":"10.0.1.11"},"values":[[1,"1"]]}
 		]}}`))
 	}))

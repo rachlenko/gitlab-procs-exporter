@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -26,7 +27,7 @@ type config struct {
 
 func main() {
 	cfg, err := parseFlags(os.Args[1:])
-	if err == flag.ErrHelp {
+	if errors.Is(err, flag.ErrHelp) {
 		return
 	}
 	if err != nil {
@@ -62,11 +63,12 @@ func parseFlags(argv []string) (config, error) {
 	fs.StringVar(&cfg.jobID, "job-id", os.Getenv("CI_JOB_ID"),
 		"GitLab job id; auto-resolves the runner node from gitlab_process_info (env CI_JOB_ID)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "jobreport — gitlab-procs-exporter top-N process report (CPU / peak-RSS / IO)")
-		fmt.Fprintln(fs.Output(), "\nUsage:")
-		fmt.Fprintln(fs.Output(), "  jobreport [flags]")
-		fmt.Fprintln(fs.Output(), "  jobreport <job.log-URL> [flags]   # URL mode: parse the log, scope to its window/node")
-		fmt.Fprintln(fs.Output(), "\nFlags:")
+		fmt.Fprintf(fs.Output(), "%s\n",
+			"jobreport — gitlab-procs-exporter top-N process report (CPU / peak-RSS / IO)\n"+
+				"\nUsage:\n"+
+				"  jobreport [flags]\n"+
+				"  jobreport <job.log-URL> [flags]   # URL mode: parse the log, scope to its window/node\n"+
+				"\nFlags:")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(argv); err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,7 +79,11 @@ var (
 // fetchLog downloads a job.log URL (or, if it points at a local file, reads it).
 func fetchLog(jobURL string) ([]byte, error) {
 	cl := &http.Client{Timeout: 60 * time.Second}
-	resp, err := cl.Get(jobURL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, jobURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cl.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -22,7 +22,7 @@ func runURL(promURL, jobURL string, topN int) error {
 
 	c := newPromClient(promURL)
 	step := stepFor(j.StartEpoch, j.EndEpoch)
-	node := "all"
+	var node string
 	nodeNote := ""
 	fellBack := false
 	nodes, err := c.resolveNodeByJobID(j.JobID, j.StartEpoch, j.EndEpoch, step)

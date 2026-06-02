@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,7 +46,11 @@ func newPromClient(base string) *promClient {
 
 func (c *promClient) get(path string, q url.Values) (*promResp, error) {
 	u := c.base + path + "?" + q.Encode()
-	resp, err := c.http.Get(u)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
