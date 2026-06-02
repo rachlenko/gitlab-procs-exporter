@@ -7,6 +7,12 @@ gitlab-procs-exporter.exe
 *.so
 *.dylib
 gitlab-procs-exporter-linux-*
+# Root-anchored so it does NOT match the cmd/jobreport/ source directory.
+/jobreport
+/jobreport-linux-*
+
+# Local build output dir (make build / make build-jobreport)
+.bin/
 
 # Testing & Coverage
 *.test
@@ -42,5 +48,7 @@ Thumbs.db
 
 # Local logs and temporary files
 *.log
+# but keep the jobreport test fixtures (real job logs used by the parser tests)
+!cmd/jobreport/testdata/*.log
 tmp/
 dist/

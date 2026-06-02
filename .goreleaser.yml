@@ -15,17 +15,36 @@ builds:
     ldflags:
       - -s -w -X main.revision={{.Tag}}-{{.ShortCommit}}
 
+  # jobreport: one-shot CLI that renders top-N process reports from Prometheus
+  # (and parses GitLab job logs). Ships alongside the exporter so CI jobs can
+  # call it directly. Stdlib-only, so it cross-compiles cleanly.
+  - id: jobreport
+    main: ./cmd/jobreport
+    binary: jobreport
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
 archives:
   - id: gitlab-procs-exporter
-    builds:
+    ids:
       - gitlab-procs-exporter
+      - jobreport
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 nfpms:
   - id: gitlab-procs-exporter
     package_name: gitlab-procs-exporter
-    builds:
+    ids:
       - gitlab-procs-exporter
+      - jobreport
     vendor: rachlenko
     homepage: https://github.com/rachlenko/gitlab-procs-exporter
     maintainer: Evgeny Rachlenko <evgeny.rachlenko@gmail.com>

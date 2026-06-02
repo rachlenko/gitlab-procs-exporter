@@ -12,6 +12,14 @@ all: fmt lint test build
 build:
 	go build -ldflags "-X main.revision=$(REV) -s -w" -o .bin/gitlab-procs-exporter
 
+# Compile the jobreport CLI (one-shot top-N report / GitLab job-log parser).
+build-jobreport:
+	go build -ldflags "-s -w" -o .bin/jobreport ./cmd/jobreport
+
+# Cross-compile a static jobreport for Linux runners (handy for CI images).
+build-jobreport-linux:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o .bin/jobreport-linux-amd64 ./cmd/jobreport
+
 # Run tests with coverage and exclude mocks
 test:
 	go clean -testcache
@@ -76,4 +84,4 @@ release: test
 	 git push origin "$$version"; \
 	 echo "==> pushed $$version; CI will build the release artifacts"
 
-.PHONY: all build test lint fmt race version release
+.PHONY: all build build-jobreport build-jobreport-linux test lint fmt race version release
