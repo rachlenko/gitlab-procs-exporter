@@ -72,8 +72,11 @@ func TestMetaMapKeepsRichest(t *testing.T) {
 
 func TestResolveNodeByJobID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.RawQuery, "126741069") {
-			t.Errorf("query missing job id: %s", r.URL.RawQuery)
+		// The job id is carried in the cmdline label as "JOB_ID=<id>" (it is NOT
+		// in environ), so the resolver must match on cmdline, not environ.
+		query := r.URL.Query().Get("query")
+		if !strings.Contains(query, `cmdline=~`) || !strings.Contains(query, "JOB_ID=126741069") {
+			t.Errorf("resolver must match cmdline JOB_ID; got query: %s", query)
 		}
 		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
 			{"metric":{"node_ip":"10.0.1.11"},"values":[[1,"1"]]}

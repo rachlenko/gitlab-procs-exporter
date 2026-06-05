@@ -176,7 +176,16 @@ func (c *promClient) resolveNodeByJobID(jobID string, start, end, step int64) ([
 	if jobID == "" {
 		return nil, nil
 	}
-	expr := fmt.Sprintf("count by (node_ip)(gitlab_process_info{environ=~%q})", ".*"+jobID+".*")
+	// The GitLab job id is embedded in the process *cmdline* as "JOB_ID=<id>"
+	// (shell/docker executors that run on scraped VM nodes); environ does not
+	// carry it. Some setups instead expose it in the environment as
+	// "CI_JOB_ID=<id>", so match either. The trailing "([^0-9].*)?" is an
+	// edge/non-digit boundary so JOB_ID=123 doesn't also match JOB_ID=1234.
+	bound := jobID + "([^0-9].*)?"
+	expr := fmt.Sprintf(
+		"count by (node_ip)(gitlab_process_info{cmdline=~%q} or gitlab_process_info{environ=~%q})",
+		".*JOB_ID="+bound, ".*CI_JOB_ID="+bound,
+	)
 	pr, err := c.queryRange(expr, start, end, step)
 	if err != nil {
 		return nil, err
