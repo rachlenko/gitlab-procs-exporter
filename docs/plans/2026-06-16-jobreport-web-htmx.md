@@ -97,14 +97,14 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
 
 ## Phase D — UTC time-window builder
 
-- [ ] D1. `cmd/jobreport-web/window.go`: `buildWindow(startDate, startHour,
+- [x] D1. `cmd/jobreport-web/window.go`: `buildWindow(startDate, startHour,
       startMin, endDate, endHour, endMin string) (window string, err error)`.
       Rules: if ALL six are empty → return `""` (caller omits `-window`, jobreport
       defaults to 10m). If both start and end groups are fully provided → parse as
       UTC (`time.Date(..., time.UTC)`, date `2006-01-02`, hour/min ints) and
       return `"<startEpoch>..<endEpoch>"`. Partial input, bad format, or end ≤
       start → return a descriptive error.
-- [ ] D2. `cmd/jobreport-web/window_test.go`: all-empty→`""`; full valid→correct
+- [x] D2. `cmd/jobreport-web/window_test.go`: all-empty→`""`; full valid→correct
       epoch range (assert exact epochs for a known UTC datetime); partial→error;
       end-before-start→error; bad date→error. **Verify:**
       `go test ./cmd/jobreport-web/` passes.
