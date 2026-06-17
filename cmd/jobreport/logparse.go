@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -77,7 +78,12 @@ var (
 )
 
 // fetchLog downloads a job.log URL (or, if it points at a local file, reads it).
+// Presigned job-log URLs expire within minutes, so reading a saved copy from disk
+// — either a bare path or a file:// URL — keeps the same report reproducible.
 func fetchLog(jobURL string) ([]byte, error) {
+	if path, ok := localPath(jobURL); ok {
+		return os.ReadFile(path)
+	}
 	cl := &http.Client{Timeout: 60 * time.Second}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, jobURL, nil)
 	if err != nil {
@@ -99,6 +105,19 @@ func fetchLog(jobURL string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d fetching job log", resp.StatusCode)
 	}
 	return body, nil
+}
+
+// localPath reports whether src refers to a local file rather than an http(s)
+// endpoint, returning the filesystem path to read. A file:// URL is always local;
+// anything without an http(s) scheme is treated as a bare path.
+func localPath(src string) (string, bool) {
+	if p, ok := strings.CutPrefix(src, "file://"); ok {
+		return p, true
+	}
+	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+		return "", false
+	}
+	return src, true
 }
 
 func stripANSI(s string) string { return reANSI.ReplaceAllString(s, "") }

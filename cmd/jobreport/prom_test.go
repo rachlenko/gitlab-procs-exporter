@@ -7,6 +7,21 @@ import (
 	"testing"
 )
 
+func TestNewPromClientBase(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", "http://localhost:9090"},                                         // default
+		{"prometheus.example.net", "https://prometheus.example.net"},          // no scheme -> https
+		{"prometheus.example.net/", "https://prometheus.example.net"},         // trailing slash trimmed
+		{"https://prometheus.example.net/", "https://prometheus.example.net"}, // already has scheme
+		{"http://localhost:9090", "http://localhost:9090"},                    // http preserved
+	}
+	for _, c := range cases {
+		if got := newPromClient(c.in).base; got != c.want {
+			t.Errorf("newPromClient(%q).base = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestSelector(t *testing.T) {
 	cases := []struct{ proc, node, want string }{
 		{"all", "all", "{}"},

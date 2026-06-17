@@ -67,23 +67,49 @@ func parseFlags(argv []string) (config, error) {
 			"jobreport — gitlab-procs-exporter top-N process report (CPU / peak-RSS / IO)\n"+
 				"\nUsage:\n"+
 				"  jobreport [flags]\n"+
-				"  jobreport <job.log-URL> [flags]   # URL mode: parse the log, scope to its window/node\n"+
+				"  jobreport <job.log-URL|path> [flags]   # URL mode: parse the log (remote URL or saved\n"+
+				"                                         # file), scope to its window/node\n"+
 				"\nFlags:")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(argv); err != nil {
+	// Go's flag package stops at the first non-flag argument, which would make
+	// `jobreport <url> -prom ...` silently drop every flag after the positional.
+	// Pull the positional out first so flags work on either side of it.
+	pos, rest := splitPositional(argv)
+	if err := fs.Parse(rest); err != nil {
 		return cfg, err
 	}
-	// Accept a bare URL as the first positional argument (shorthand for -url).
-	if cfg.jobURL == "" {
-		for _, a := range fs.Args() {
-			if strings.HasPrefix(a, "http") {
-				cfg.jobURL = a
-				break
-			}
-		}
+	// Accept a bare job-log source as the positional argument (shorthand for
+	// -url): an http(s) URL, or a local path / file:// URL to a saved job.log.
+	if cfg.jobURL == "" && (strings.HasPrefix(pos, "http") || isLocalFile(pos)) {
+		cfg.jobURL = pos
 	}
 	return cfg, nil
+}
+
+// splitPositional separates the first bare positional argument from the flag
+// arguments in argv. Every jobreport flag takes a value (none are boolean), so a
+// token starting with "-" consumes the following token as its value unless it
+// already carries one via "=". This lets the job-log source appear before or
+// after the flags.
+func splitPositional(argv []string) (pos string, rest []string) {
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		if strings.HasPrefix(a, "-") {
+			rest = append(rest, a)
+			if !strings.Contains(a, "=") && i+1 < len(argv) {
+				i++
+				rest = append(rest, argv[i])
+			}
+			continue
+		}
+		if pos == "" {
+			pos = a
+		} else {
+			rest = append(rest, a)
+		}
+	}
+	return pos, rest
 }
 
 // run dispatches to URL mode (window derived from the parsed log) or to the
@@ -130,6 +156,16 @@ func run(cfg config) error {
 	}
 	fmt.Println(sep)
 	return report(c, cfg.proc, node, start, end, cfg.topN)
+}
+
+// isLocalFile reports whether arg names an existing regular file, so a bare path
+// to a saved job.log is accepted as the positional job-log source.
+func isLocalFile(arg string) bool {
+	if p, ok := strings.CutPrefix(arg, "file://"); ok {
+		arg = p
+	}
+	info, err := os.Stat(arg) //nolint:gosec // G703: arg is a user-supplied CLI path by design
+	return err == nil && !info.IsDir()
 }
 
 // envOr returns $key if set and non-empty, else def.

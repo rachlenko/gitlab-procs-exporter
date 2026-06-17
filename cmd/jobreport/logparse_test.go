@@ -96,3 +96,23 @@ func TestStripANSI(t *testing.T) {
 		t.Errorf("stripANSI = %q", got)
 	}
 }
+
+func TestFetchLogLocalFile(t *testing.T) {
+	want, err := os.ReadFile("testdata/job.log")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	// Plain path and file:// URL must both read the local fixture, not hit the network.
+	for _, src := range []string{"testdata/job.log", "file://testdata/job.log"} {
+		got, err := fetchLog(src)
+		if err != nil {
+			t.Fatalf("fetchLog(%q): %v", src, err)
+		}
+		if len(got) != len(want) {
+			t.Errorf("fetchLog(%q) read %d bytes, want %d", src, len(got), len(want))
+		}
+	}
+	if _, err := fetchLog("testdata/does-not-exist.log"); err == nil {
+		t.Error("fetchLog on missing file: expected error, got nil")
+	}
+}
