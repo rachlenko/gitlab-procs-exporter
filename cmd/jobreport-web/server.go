@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Server holds the web service's runtime configuration: where the Prometheus URL
@@ -31,6 +32,34 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("/prometheus", s.handlePrometheus)
 	mux.HandleFunc("/report", s.handleReport)
 	return mux
+}
+
+// Handler returns the routes wrapped in request logging, for the live server.
+// Tests use routes() directly to keep their output quiet.
+func (s *Server) Handler() http.Handler {
+	return logRequests(s.routes())
+}
+
+// statusRecorder captures the response status code for access logging.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// logRequests logs one line per request: method, path, status, and duration.
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next.ServeHTTP(rec, r)
+		//nolint:gosec // G706: path logged with %q, which escapes any control characters
+		log.Printf("%s %q -> %d (%s)", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
+	})
 }
 
 // secureHTML sets the response content type to HTML and adds a conservative
@@ -129,6 +158,8 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	//nolint:gosec // G706: values logged with %q, which escapes any control characters
+	log.Printf("report request: prom=%q job_id=%q window=%q", prom, r.FormValue("job_id"), window)
 	output, runErr := runReport(s.selfPath, prom, r.FormValue("job_id"), window)
 	if runErr != nil && output == "" {
 		// Validation failed before exec (e.g. missing prom URL, bad job id): no

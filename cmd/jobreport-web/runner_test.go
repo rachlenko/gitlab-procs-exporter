@@ -91,7 +91,9 @@ func TestRunReport_EmptyPromURL(t *testing.T) {
 func TestRunReport_InvalidPromURL(t *testing.T) {
 	self := writeFakeSelf(t)
 	// A non-http(s) prom value must be rejected before exec, with no output.
-	out, err := runReport(self, "not-a-url", "123", "")
+	// (A bare host without scheme is NOT invalid — it defaults to https — so use an
+	// explicitly non-http scheme here.)
+	out, err := runReport(self, "ftp://prom.test/", "123", "")
 	if err == nil {
 		t.Fatalf("invalid prom URL: want error, got nil (output %q)", out)
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os/exec"
 	"regexp"
 	"time"
@@ -25,20 +26,19 @@ var jobIDPattern = regexp.MustCompile(`^\d+$`)
 // is bounded by reportTimeout. A non-zero exit is not treated as a hard failure:
 // the captured output is returned alongside the exec error so the user sees it.
 func runReport(selfPath, promURL, jobID, window string) (string, error) {
-	if promURL == "" {
-		return "", fmt.Errorf("prometheus URL is required")
-	}
-	// Validate the target the same way the store does on add: the report form's
+	// Normalize the target the same way the store does on add: the report form's
 	// prom field comes straight from the client (htmx hx-include), so it is not
-	// guaranteed to be one of the validated stored URLs.
-	if err := validateURL(promURL); err != nil {
+	// guaranteed to be one of the stored URLs. normalizeURL also defaults a missing
+	// scheme to https, so a bare host works here just as it does on the CLI.
+	normalized, err := normalizeURL(promURL)
+	if err != nil {
 		return "", err
 	}
 	if jobID != "" && !jobIDPattern.MatchString(jobID) {
 		return "", fmt.Errorf("invalid job id %q: want digits only", jobID)
 	}
 
-	args := []string{"report", "-prom", promURL}
+	args := []string{"report", "-prom", normalized}
 	if jobID != "" {
 		args = append(args, "-job-id", jobID)
 	}
@@ -49,7 +49,11 @@ func runReport(selfPath, promURL, jobID, window string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), reportTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, selfPath, args...) //nolint:gosec // G204: selfPath is this binary; args are validated (digits-only job id, no shell)
+	log.Printf("report: exec %s %q", selfPath, args)   //nolint:gosec // G706: args logged with %q, which escapes any control characters
+	cmd := exec.CommandContext(ctx, selfPath, args...) //nolint:gosec // G204: selfPath is this binary; args are validated (digits-only job id, normalized URL, no shell)
 	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("report: exec exit: %v", err)
+	}
 	return string(out), err
 }

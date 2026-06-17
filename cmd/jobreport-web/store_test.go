@@ -75,8 +75,8 @@ func TestPrometheusStore_AddRejectsNonHTTP(t *testing.T) {
 	}{
 		{"ftp scheme", "ftp://prom.example.test/"},
 		{"file scheme", "file:///etc/passwd"},
-		{"no scheme", "prom.example.test"},
 		{"empty", ""},
+		{"whitespace only", "   "},
 		{"missing host", "http://"},
 	}
 	for _, tc := range cases {
@@ -85,5 +85,33 @@ func TestPrometheusStore_AddRejectsNonHTTP(t *testing.T) {
 				t.Fatalf("Add(%q): want error, got nil", tc.url)
 			}
 		})
+	}
+}
+
+func TestPrometheusStore_AddSchemelessDefaultsHTTPS(t *testing.T) {
+	var s PrometheusStore
+	path := filepath.Join(t.TempDir(), "urls.json")
+
+	// A bare host (no scheme) must be accepted and stored with https:// prepended,
+	// matching the jobreport engine. This is what $PROMETHEUS_URL commonly holds.
+	cases := map[string]string{
+		"prometheus.example.net":   "https://prometheus.example.net",
+		"localhost:9090":           "https://localhost:9090",
+		"  prometheus.example.net": "https://prometheus.example.net", // trimmed
+	}
+	for in, want := range cases {
+		got, err := s.Add(path, in)
+		if err != nil {
+			t.Fatalf("Add(%q): unexpected error: %v", in, err)
+		}
+		found := false
+		for _, u := range got {
+			if u == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Add(%q): stored list %v does not contain %q", in, got, want)
+		}
 	}
 }

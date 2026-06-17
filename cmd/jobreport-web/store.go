@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // PrometheusStore persists the list of known Prometheus base URLs as a JSON array
@@ -32,11 +33,12 @@ func (PrometheusStore) Load(path string) ([]string, error) {
 	return urls, nil
 }
 
-// Add validates rawURL as an absolute http(s) URL, appends it to the stored list
+// Add normalizes rawURL to a canonical http(s) URL, appends it to the stored list
 // (deduping exact matches), writes the file atomically (temp file + rename), and
 // returns the updated list. A non-http(s) or unparseable URL is rejected.
 func (s PrometheusStore) Add(path, rawURL string) ([]string, error) {
-	if err := validateURL(rawURL); err != nil {
+	normalized, err := normalizeURL(rawURL)
+	if err != nil {
 		return nil, err
 	}
 
@@ -45,11 +47,11 @@ func (s PrometheusStore) Add(path, rawURL string) ([]string, error) {
 		return nil, err
 	}
 	for _, u := range urls {
-		if u == rawURL {
+		if u == normalized {
 			return urls, nil // already present, nothing to write
 		}
 	}
-	urls = append(urls, rawURL)
+	urls = append(urls, normalized)
 
 	if err := writeJSONAtomic(path, urls); err != nil {
 		return nil, err
@@ -57,19 +59,31 @@ func (s PrometheusStore) Add(path, rawURL string) ([]string, error) {
 	return urls, nil
 }
 
-// validateURL ensures rawURL parses and uses an http or https scheme with a host.
-func validateURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
+// normalizeURL canonicalizes a user-entered Prometheus URL. A missing scheme
+// defaults to https (matching the jobreport engine's newPromClient, which also
+// accepts scheme-less hosts and is what $PROMETHEUS_URL commonly holds), so a
+// user can type a bare host like "prometheus.example.net" or "localhost:9090".
+// It returns the scheme-qualified URL (trailing slash preserved; the engine trims
+// it when querying) and errors if the result is not an http(s) URL with a host.
+func normalizeURL(rawURL string) (string, error) {
+	s := strings.TrimSpace(rawURL)
+	if s == "" {
+		return "", fmt.Errorf("prometheus URL is required")
+	}
+	if !strings.Contains(s, "://") {
+		s = "https://" + s
+	}
+	u, err := url.Parse(s)
 	if err != nil {
-		return fmt.Errorf("invalid URL %q: %w", rawURL, err)
+		return "", fmt.Errorf("invalid URL %q: %w", rawURL, err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("invalid URL %q: scheme must be http or https", rawURL)
+		return "", fmt.Errorf("invalid URL %q: scheme must be http or https", rawURL)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("invalid URL %q: missing host", rawURL)
+		return "", fmt.Errorf("invalid URL %q: missing host", rawURL)
 	}
-	return nil
+	return s, nil
 }
 
 // writeJSONAtomic marshals v as indented JSON and writes it to path atomically by

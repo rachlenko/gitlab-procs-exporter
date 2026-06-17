@@ -81,7 +81,7 @@ func TestHandlePrometheus_PersistsAndReturnsOption(t *testing.T) {
 
 func TestHandlePrometheus_InvalidURL_ErrorFragment(t *testing.T) {
 	srv, _ := newTestServer(t)
-	form := url.Values{"url": {"not-a-url"}}
+	form := url.Values{"url": {"ftp://not-allowed/"}}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prometheus", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()

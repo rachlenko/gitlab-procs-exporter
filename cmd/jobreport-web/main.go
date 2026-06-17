@@ -46,7 +46,7 @@ func serve(argv []string) error {
 
 	srv := NewServer(*store, selfPath())
 	log.Printf("jobreport-web listening on %s (store %s)", *addr, *store)
-	return http.ListenAndServe(*addr, srv.routes()) //nolint:gosec // G114: internal tool, no timeouts needed; see README SSRF caveat
+	return http.ListenAndServe(*addr, srv.Handler()) //nolint:gosec // G114: internal tool, no timeouts needed; see README SSRF caveat
 }
 
 // selfPath returns the absolute path to this executable, used to re-exec the
