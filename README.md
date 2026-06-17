@@ -32,6 +32,7 @@ To solve this, before the pipeline runner forcefully terminates the job, the wor
 *   **Security Redaction Engine**: Automatically redacts environment variable values containing sensitive terms like `key`, `pass`, `token`, `secret`, `url`, `api`, etc., before exposing them to metrics.
 *   **Self-Contained Executable**: Embeds the frontend Single Page Application (SPA) dashboard within the compiled Go binary using the standard Go `embed` directive.
 *   **Cross-Platform Telemetry**: Utilizes `gopsutil` to parse `/proc` natively on Linux and system APIs on macOS.
+*   **`jobreport` CLI & `jobreport-web` UI**: A companion one-shot CLI ([`cmd/jobreport`](cmd/jobreport/README.md)) renders top-N process tables straight from Prometheus, and a single self-contained htmx web app ([`cmd/jobreport-web`](cmd/jobreport-web/README.md)) runs it from the browser against a chosen Prometheus URL, job id, and UTC time window.
 
 ---
 

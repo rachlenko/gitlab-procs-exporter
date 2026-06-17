@@ -161,14 +161,14 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
 
 ## Phase G — Integration, build target, docs, final gate
 
-- [ ] G1. Add a Makefile target/rule so `make build` also builds
+- [x] G1. Add a Makefile target/rule so `make build` also builds
       `cmd/jobreport-web` into `.bin/jobreport-web` (mirror the existing jobreport
       build). **Verify:** `make build` produces `.bin/jobreport-web`.
-- [ ] G2. Add `cmd/jobreport-web/README.md`: what it is, flags/env, how the
+- [x] G2. Add `cmd/jobreport-web/README.md`: what it is, flags/env, how the
       single-binary self-exec works, the embedded-assets note, and the
       internal-tool/SSRF caveat (do not expose publicly; the backend connects to
       the user-supplied Prometheus URL). Link it from the top-level README.
-- [ ] G3. Manual smoke test: start `.bin/jobreport-web -addr :8099` in the
+- [x] G3. Manual smoke test: start `.bin/jobreport-web -addr :8099` in the
       background; `curl -s localhost:8099/` shows the form; `curl -s -X POST
       localhost:8099/prometheus -d 'url=https://example.test/'` returns the
       updated dropdown and the store file now contains the URL; `curl -s -X POST
@@ -176,6 +176,6 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
       `<pre>` (report or a clean Prometheus error — both acceptable, proves the
       pipeline runs). Stop the server. **Verify:** all three curls behave as
       described.
-- [ ] G4. Final gate: `gofmt -l` clean for new dirs; `make build && make lint &&
+- [x] G4. Final gate: `gofmt -l` clean for new dirs; `make build && make lint &&
       make test` all green. Update the top-level README feature list to mention
       jobreport-web. Then output `ALL_TASKS_DONE`.

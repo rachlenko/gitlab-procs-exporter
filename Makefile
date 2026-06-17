@@ -8,13 +8,18 @@ REV=$(if $(filter --,$(GIT_REV)),latest,$(GIT_REV))
 
 all: fmt lint test build
 
-# Compile binary with revision ldflags
-build:
+# Compile binary with revision ldflags. Also builds the jobreport-web single
+# self-contained binary so `make build` yields both runtime artifacts.
+build: build-jobreport-web
 	go build -ldflags "-X main.revision=$(REV) -s -w" -o .bin/gitlab-procs-exporter
 
 # Compile the jobreport CLI (one-shot top-N report / GitLab job-log parser).
 build-jobreport:
 	go build -ldflags "-s -w" -o .bin/jobreport ./cmd/jobreport
+
+# Compile the jobreport-web server (embedded htmx UI; self-execs as jobreport).
+build-jobreport-web:
+	go build -ldflags "-s -w" -o .bin/jobreport-web ./cmd/jobreport-web
 
 # Cross-compile a static jobreport for Linux runners (handy for CI images).
 build-jobreport-linux:
@@ -84,4 +89,4 @@ release: test
 	 git push origin "$$version"; \
 	 echo "==> pushed $$version; CI will build the release artifacts"
 
-.PHONY: all build build-jobreport build-jobreport-linux test lint fmt race version release
+.PHONY: all build build-jobreport build-jobreport-web build-jobreport-linux test lint fmt race version release
