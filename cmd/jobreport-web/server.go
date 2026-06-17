@@ -159,22 +159,16 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Effective Prometheus target: the dropdown selection, or a URL typed into the
-	// "add" field and submitted directly with Report. This lets a first-time user
-	// (empty dropdown) run a report in one step without first clicking "Add URL".
-	// A freshly-typed, valid URL is also persisted so it appears in the dropdown
-	// next time; persistence is best-effort and an invalid one is surfaced by
-	// runReport's own validation below.
-	prom := r.FormValue("prom")
-	if prom == "" {
-		if typed := strings.TrimSpace(r.FormValue("url")); typed != "" {
-			prom = typed
-			s.storeMu.Lock()
-			if _, err := s.store.Add(s.storePath, typed); err != nil {
-				log.Printf("auto-add prometheus url: %v", err)
-			}
-			s.storeMu.Unlock()
+	// The Prometheus URL is a single editable field (typed or chosen from the saved
+	// suggestions). Persist a non-empty value best-effort so it is offered as a
+	// suggestion next time; an invalid one is surfaced by runReport's validation.
+	prom := strings.TrimSpace(r.FormValue("prom"))
+	if prom != "" {
+		s.storeMu.Lock()
+		if _, err := s.store.Add(s.storePath, prom); err != nil {
+			s.dbg("persist prometheus url %q: %v", prom, err)
 		}
+		s.storeMu.Unlock()
 	}
 
 	//nolint:gosec // G706: values logged with %q, which escapes any control characters

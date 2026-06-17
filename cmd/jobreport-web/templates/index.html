@@ -43,30 +43,24 @@
 <body>
   <h1>jobreport-web</h1>
 
+  <form>
   <fieldset>
     <legend>Prometheus</legend>
     <div class="row">
       <div>
         <label for="prom">Prometheus URL</label>
-        {{template "urls" .URLs}}
-      </div>
-    </div>
-    <div class="row" style="margin-top: 0.75rem;">
-      <div>
-        <label for="new-url">Add a Prometheus URL</label>
-        <input id="new-url" type="text" name="url" placeholder="https://prometheus.example/" style="width: 100%;">
-      </div>
-      <div style="flex: 0 0 auto;">
-        <button type="button"
-                hx-post="/prometheus"
-                hx-include="#new-url"
-                hx-target="#prom"
-                hx-swap="outerHTML">Add URL</button>
+        <input id="prom" name="prom" type="text" list="prom-urls"
+               placeholder="https://prometheus.example/" style="width: 100%;"
+               {{with .URLs}}value="{{index . 0}}"{{end}}>
+        <datalist id="prom-urls">
+          {{- range .URLs}}
+          <option value="{{.}}"></option>
+          {{- end}}
+        </datalist>
       </div>
     </div>
   </fieldset>
 
-  <form>
     <fieldset>
       <legend>Report</legend>
       <div class="row">
@@ -83,9 +77,9 @@
         <div>
           <label>Start</label>
           <div class="time-group">
-            <div><input type="date" name="start_date" aria-label="start date"></div>
-            <div><input type="number" name="start_hour" min="0" max="23" placeholder="HH" aria-label="start hour"></div>
-            <div><input type="number" name="start_min" min="0" max="59" placeholder="MM" aria-label="start minute"></div>
+            <div><label for="start_date">Date</label><input id="start_date" type="date" name="start_date"></div>
+            <div><label for="start_hour">Hour</label><input id="start_hour" type="number" name="start_hour" min="0" max="23" placeholder="HH"></div>
+            <div><label for="start_min">Minute</label><input id="start_min" type="number" name="start_min" min="0" max="59" placeholder="MM"></div>
           </div>
         </div>
       </div>
@@ -93,9 +87,9 @@
         <div>
           <label>End</label>
           <div class="time-group">
-            <div><input type="date" name="end_date" aria-label="end date"></div>
-            <div><input type="number" name="end_hour" min="0" max="23" placeholder="HH" aria-label="end hour"></div>
-            <div><input type="number" name="end_min" min="0" max="59" placeholder="MM" aria-label="end minute"></div>
+            <div><label for="end_date">Date</label><input id="end_date" type="date" name="end_date"></div>
+            <div><label for="end_hour">Hour</label><input id="end_hour" type="number" name="end_hour" min="0" max="23" placeholder="HH"></div>
+            <div><label for="end_min">Minute</label><input id="end_min" type="number" name="end_min" min="0" max="59" placeholder="MM"></div>
           </div>
         </div>
       </div>
@@ -103,7 +97,7 @@
 
     <button type="button"
             hx-post="/report"
-            hx-include="closest form, #prom, #new-url"
+            hx-include="closest form"
             hx-target="#results"
             hx-swap="innerHTML">Report</button>
   </form>
