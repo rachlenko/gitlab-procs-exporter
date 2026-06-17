@@ -140,6 +140,32 @@ func TestHandleReport_MissingProm_ErrorFragment(t *testing.T) {
 	}
 }
 
+func TestHandleReport_TypedURLFallbackAndPersist(t *testing.T) {
+	srv, storePath := newTestServer(t)
+	// No dropdown selection (prom empty), but a URL typed into the "add" field and
+	// submitted directly with Report: it must be used for the report AND persisted.
+	form := url.Values{"prom": {""}, "url": {"https://typed.example/"}}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/report", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /report typed url: status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "<pre>") || !strings.Contains(body, "https://typed.example/") {
+		t.Errorf("POST /report typed url: want a report referencing the typed URL, got %q", body)
+	}
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read store: %v", err)
+	}
+	if !strings.Contains(string(data), "https://typed.example/") {
+		t.Errorf("POST /report typed url: URL was not persisted, store = %q", data)
+	}
+}
+
 func TestHandleReport_MethodNotAllowed(t *testing.T) {
 	srv, _ := newTestServer(t)
 	rec := httptest.NewRecorder()

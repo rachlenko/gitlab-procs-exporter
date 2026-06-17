@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -110,7 +111,25 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, runErr := runReport(s.selfPath, r.FormValue("prom"), r.FormValue("job_id"), window)
+	// Effective Prometheus target: the dropdown selection, or a URL typed into the
+	// "add" field and submitted directly with Report. This lets a first-time user
+	// (empty dropdown) run a report in one step without first clicking "Add URL".
+	// A freshly-typed, valid URL is also persisted so it appears in the dropdown
+	// next time; persistence is best-effort and an invalid one is surfaced by
+	// runReport's own validation below.
+	prom := r.FormValue("prom")
+	if prom == "" {
+		if typed := strings.TrimSpace(r.FormValue("url")); typed != "" {
+			prom = typed
+			s.storeMu.Lock()
+			if _, err := s.store.Add(s.storePath, typed); err != nil {
+				log.Printf("auto-add prometheus url: %v", err)
+			}
+			s.storeMu.Unlock()
+		}
+	}
+
+	output, runErr := runReport(s.selfPath, prom, r.FormValue("job_id"), window)
 	if runErr != nil && output == "" {
 		// Validation failed before exec (e.g. missing prom URL, bad job id): no
 		// captured output to show, so surface the error text itself.
