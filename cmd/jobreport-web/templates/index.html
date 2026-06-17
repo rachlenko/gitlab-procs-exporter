@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>jobreport-web</title>
+  <script src="/static/htmx.min.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: #0d1117; color: #c9d1d9; margin: 0; padding: 2rem;
+    }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1.5rem; color: #e6edf3; }
+    form { max-width: 720px; }
+    fieldset {
+      border: 1px solid #30363d; border-radius: 8px; margin: 0 0 1.25rem; padding: 1rem;
+      background: #161b22;
+    }
+    legend { padding: 0 0.5rem; color: #8b949e; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    label { display: block; margin: 0 0 0.35rem; color: #8b949e; font-size: 0.85rem; }
+    input, select, button {
+      font: inherit; background: #0d1117; color: #c9d1d9;
+      border: 1px solid #30363d; border-radius: 6px; padding: 0.4rem 0.6rem;
+    }
+    input:focus, select:focus { outline: none; border-color: #1f6feb; }
+    button {
+      background: #238636; color: #fff; border-color: #2ea043; cursor: pointer;
+    }
+    button:hover { background: #2ea043; }
+    .row { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; }
+    .row > div { flex: 1 1 auto; }
+    .time-group { display: flex; gap: 0.5rem; }
+    .time-group > div { flex: 1; }
+    #results { margin-top: 1.5rem; }
+    pre {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 1rem; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    }
+    .error { color: #f85149; }
+  </style>
+</head>
+<body>
+  <h1>jobreport-web</h1>
+
+  <fieldset>
+    <legend>Prometheus</legend>
+    <div class="row">
+      <div>
+        <label for="prom">Prometheus URL</label>
+        {{template "urls" .URLs}}
+      </div>
+    </div>
+    <div class="row" style="margin-top: 0.75rem;">
+      <div>
+        <label for="new-url">Add a Prometheus URL</label>
+        <input id="new-url" type="text" name="url" placeholder="https://prometheus.example/" style="width: 100%;">
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button type="button"
+                hx-post="/prometheus"
+                hx-include="#new-url"
+                hx-target="#prom"
+                hx-swap="outerHTML">Add URL</button>
+      </div>
+    </div>
+  </fieldset>
+
+  <form>
+    <fieldset>
+      <legend>Report</legend>
+      <div class="row">
+        <div>
+          <label for="job_id">Job ID (optional)</label>
+          <input id="job_id" type="text" name="job_id" inputmode="numeric" placeholder="e.g. 123456" style="width: 100%;">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Time window (UTC) &mdash; optional, defaults to last 10m</legend>
+      <div class="row">
+        <div>
+          <label>Start</label>
+          <div class="time-group">
+            <div><input type="date" name="start_date" aria-label="start date"></div>
+            <div><input type="number" name="start_hour" min="0" max="23" placeholder="HH" aria-label="start hour"></div>
+            <div><input type="number" name="start_min" min="0" max="59" placeholder="MM" aria-label="start minute"></div>
+          </div>
+        </div>
+      </div>
+      <div class="row" style="margin-top: 0.75rem;">
+        <div>
+          <label>End</label>
+          <div class="time-group">
+            <div><input type="date" name="end_date" aria-label="end date"></div>
+            <div><input type="number" name="end_hour" min="0" max="23" placeholder="HH" aria-label="end hour"></div>
+            <div><input type="number" name="end_min" min="0" max="59" placeholder="MM" aria-label="end minute"></div>
+          </div>
+        </div>
+      </div>
+    </fieldset>
+
+    <button type="button"
+            hx-post="/report"
+            hx-include="closest form, #prom"
+            hx-target="#results"
+            hx-swap="innerHTML">Report</button>
+  </form>
+
+  <div id="results"></div>
+</body>
+</html>

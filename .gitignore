@@ -10,9 +10,16 @@ gitlab-procs-exporter-linux-*
 # Root-anchored so it does NOT match the cmd/jobreport/ source directory.
 /jobreport
 /jobreport-linux-*
+/jobreport-web
+# Stray binary if `go build` is run inside the cmd/jobreport source dir.
+cmd/jobreport/jobreport
 
 # Local build output dir (make build / make build-jobreport)
 .bin/
+
+# jobreport-web runtime data (default store path is ./jobreport-web-urls.json)
+/jobreport-web-urls.json
+/.jobreport-web-urls-*.json
 
 # Testing & Coverage
 *.test
@@ -52,3 +59,6 @@ Thumbs.db
 !cmd/jobreport/testdata/*.log
 tmp/
 dist/
+
+# ralphex progress logs
+.ralphex/progress/

@@ -19,7 +19,7 @@ GitLab pipeline you set the values once in the job environment and call
 | `-node`    | `JOBREPORT_NODE`  | `all`                    | `node_ip` filter, or `all` for no filter.                              |
 | `-window`  | `JOBREPORT_WINDOW`| `10m` (last 10 minutes)  | **Optional.** `10m\|1h\|2d` (relative) or `<startEpoch>..<endEpoch>` (absolute UTC). |
 | `-top`     | `JOBREPORT_TOP`   | `5`                      | Rows per table.                                                         |
-| `-url`     | `JOBREPORT_URL`   | —                        | GitLab `job.log` artifact URL; enables URL mode.                        |
+| `-url`     | `JOBREPORT_URL`   | —                        | GitLab `job.log` artifact URL, or a local path / `file://` to a saved log; enables URL mode. |
 | `-job-id`  | `CI_JOB_ID`       | —                        | GitLab job id; auto-resolves the runner node from `gitlab_process_info`.|
 
 ### The time window is automatic
@@ -47,6 +47,11 @@ jobreport -job-id "$CI_JOB_ID"
 # URL mode — parse the job log, then report on its exact window/node:
 jobreport -url "$JOB_LOG_URL"
 jobreport "$JOB_LOG_URL"          # bare URL is shorthand for -url
+
+# Same, from a saved log file (presigned URLs expire within minutes, so a
+# downloaded copy keeps the report reproducible). Flags may come after the path:
+jobreport ./job.log -prom "$PROMETHEUS_URL" -top 10
+jobreport file://./job.log
 ```
 
 ## Integrating with GitLab CI pipelines

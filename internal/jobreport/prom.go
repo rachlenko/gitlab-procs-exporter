@@ -1,4 +1,4 @@
-package main
+package jobreport
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,11 +37,18 @@ type promClient struct {
 }
 
 // newPromClient builds a client against the given Prometheus base URL. An empty
-// base falls back to defaultPromURL so callers can pass through unset config.
+// base falls back to defaultPromURL so callers can pass through unset config. A
+// base with no scheme (e.g. "prometheus.example.net", as commonly set via
+// $PROMETHEUS_URL) defaults to https, and a trailing slash is trimmed so paths
+// join cleanly.
 func newPromClient(base string) *promClient {
 	if base == "" {
 		base = defaultPromURL
 	}
+	if !strings.Contains(base, "://") {
+		base = "https://" + base
+	}
+	base = strings.TrimRight(base, "/")
 	return &promClient{base: base, http: &http.Client{Timeout: 30 * time.Second}}
 }
 

@@ -3,7 +3,7 @@
 Prometheus process exporter with an active 10-minute sliding cache in-memory buffer and a premium dark-mode SPA dashboard.
 
 ## Build and Quality Verification
-* Build binary: `make build`
+* Build binaries: `make build` (produces both `.bin/gitlab-procs-exporter` and `.bin/jobreport-web`; `make build-jobreport` / `make build-jobreport-web` build the companions individually)
 * Format code: `make fmt`
 * Run linters: `make lint`
 * Run unit tests: `make test`
@@ -13,6 +13,9 @@ Prometheus process exporter with an active 10-minute sliding cache in-memory buf
 * `exporter/history.go` — Sliding 10-minute `HistoryStore` buffer designed with thread-safe lock pools.
 * `exporter/collector.go` — Custom Prometheus exporter metrics reporting system with credential filtering rules.
 * `dashboard/` — Front-end glassmorphic SPA utilizing Chart.js rendering timeline charts.
+* `internal/jobreport/` — Shared jobreport engine (Prometheus queries, log parsing, table rendering). Entry point `Main(argv []string) int` drives both the CLI and the web UI.
+* `cmd/jobreport/` — Thin wrapper binary; `main` delegates to `internal/jobreport.Main`.
+* `cmd/jobreport-web/` — Self-contained htmx web UI for jobreport. Single binary that embeds templates + htmx via `go:embed` and self-execs: when `os.Args[1] == "report"` it behaves as the jobreport CLI, otherwise it serves HTTP. The server re-execs itself (resolved via `os.Executable()`) with a leading `report` arg to produce reports — never via a shell string; pass `exec.Command` separate, validated args (digits-only job id). Treat as an internal tool: no auth, the backend connects to the user-supplied Prometheus URL (SSRF caveat in its README).
 
 ## Code Style & Implementation Standards
 * Keep one `*_test.go` file associated directly per implementation file.
