@@ -85,12 +85,12 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
 
 ## Phase C — Prometheus URL store (JSON persistence)
 
-- [ ] C1. `cmd/jobreport-web/store.go`: `PrometheusStore` with
+- [x] C1. `cmd/jobreport-web/store.go`: `PrometheusStore` with
       `Load(path) ([]string, error)` (missing file → empty slice, no error),
       `Add(path, url string) ([]string, error)` (validate http(s) via
       `url.Parse`, dedupe, append, write JSON atomically via temp file+rename).
       Annotate file reads/writes with `//nolint:gosec` + reason.
-- [ ] C2. `cmd/jobreport-web/store_test.go`: table tests — missing file returns
+- [x] C2. `cmd/jobreport-web/store_test.go`: table tests — missing file returns
       empty; Add persists and is reloadable; duplicate URL is not added twice;
       non-http(s) URL is rejected with an error. **Verify:**
       `go test ./cmd/jobreport-web/` passes.
