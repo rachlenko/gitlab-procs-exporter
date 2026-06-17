@@ -31,13 +31,13 @@ into ONE binary. The report is executed by the SAME binary re-exec'ing itself
 Goal: move the report logic out of `package main` so both `cmd/jobreport` and
 `cmd/jobreport-web` can drive it, while the existing CLI behaves identically.
 
-- [ ] A1. Create dir `internal/jobreport/`. Move these files from `cmd/jobreport/`
+- [x] A1. Create dir `internal/jobreport/`. Move these files from `cmd/jobreport/`
       into it unchanged except the package clause: `logparse.go`, `meta.go`,
       `prom.go`, `render.go`, `url.go` (and their `_test.go` siblings). Change
       `package main` → `package jobreport` in every moved file. Move
       `cmd/jobreport/testdata/` → `internal/jobreport/testdata/` (tests read
       `testdata/job.log`). **Verify:** `go build ./internal/...` compiles.
-- [ ] A2. Move the CLI body out of `cmd/jobreport/main.go` into
+- [x] A2. Move the CLI body out of `cmd/jobreport/main.go` into
       `internal/jobreport/cli.go` (`package jobreport`): the `config` type,
       `parseFlags`, `splitPositional`, `isLocalFile`, `run`, `report`,
       `renderRows`, `parseWindow`, `stepFor`, `fdate`, `envOr`, `envInt`, `sep`.
@@ -54,7 +54,7 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
       ```
       Move `cmd/jobreport/main_test.go` → `internal/jobreport/cli_test.go`
       (`package jobreport`). **Verify:** `go test ./internal/jobreport/` passes.
-- [ ] A3. Replace `cmd/jobreport/main.go` with a thin wrapper:
+- [x] A3. Replace `cmd/jobreport/main.go` with a thin wrapper:
       ```go
       package main
       import ("os"; "github.com/rachlenko/gitlab-procs-exporter/internal/jobreport")
@@ -63,7 +63,7 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
       Confirm the module path prefix matches `go.mod` (use the real module path).
       **Verify:** `go build ./cmd/jobreport && go test ./... ` green; running
       `go run ./cmd/jobreport -h` prints the usage as before.
-- [ ] A4. Confirm no symbol the web package will need stays unexported-and-unreachable.
+- [x] A4. Confirm no symbol the web package will need stays unexported-and-unreachable.
       The web package only needs `jobreport.Main`. Everything else stays package-private.
       **Verify:** `make build && make test` green; commit Phase A.
 
