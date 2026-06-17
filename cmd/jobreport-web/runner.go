@@ -28,6 +28,12 @@ func runReport(selfPath, promURL, jobID, window string) (string, error) {
 	if promURL == "" {
 		return "", fmt.Errorf("prometheus URL is required")
 	}
+	// Validate the target the same way the store does on add: the report form's
+	// prom field comes straight from the client (htmx hx-include), so it is not
+	// guaranteed to be one of the validated stored URLs.
+	if err := validateURL(promURL); err != nil {
+		return "", err
+	}
 	if jobID != "" && !jobIDPattern.MatchString(jobID) {
 		return "", fmt.Errorf("invalid job id %q: want digits only", jobID)
 	}

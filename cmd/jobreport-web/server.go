@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"sync"
 )
 
 // Server holds the web service's runtime configuration: where the Prometheus URL
@@ -12,6 +13,7 @@ type Server struct {
 	storePath string          // path to the Prometheus URL store JSON file
 	selfPath  string          // path to this binary, re-exec'd as the report subcommand
 	store     PrometheusStore // persistence for the Prometheus URL list
+	storeMu   sync.Mutex      // serializes store mutations (read-modify-write in Add)
 }
 
 // NewServer builds a Server. selfPath should be os.Args[0]; it is the binary that
@@ -67,7 +69,11 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 		_ = renderError(w, "could not read form")
 		return
 	}
+	// Serialize the store's read-modify-write so concurrent adds can't lose an
+	// update (the atomic rename prevents a corrupt file, not a lost update).
+	s.storeMu.Lock()
 	urls, err := s.store.Add(s.storePath, r.FormValue("url"))
+	s.storeMu.Unlock()
 	if err != nil {
 		secureHTML(w)
 		_ = renderError(w, err.Error())

@@ -87,3 +87,15 @@ func TestRunReport_EmptyPromURL(t *testing.T) {
 		t.Fatalf("empty prom URL: want error, got nil")
 	}
 }
+
+func TestRunReport_InvalidPromURL(t *testing.T) {
+	self := writeFakeSelf(t)
+	// A non-http(s) prom value must be rejected before exec, with no output.
+	out, err := runReport(self, "not-a-url", "123", "")
+	if err == nil {
+		t.Fatalf("invalid prom URL: want error, got nil (output %q)", out)
+	}
+	if out != "" {
+		t.Errorf("invalid prom URL: want no output (validation before exec), got %q", out)
+	}
+}

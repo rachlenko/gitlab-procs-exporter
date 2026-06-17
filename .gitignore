@@ -17,6 +17,10 @@ cmd/jobreport/jobreport
 # Local build output dir (make build / make build-jobreport)
 .bin/
 
+# jobreport-web runtime data (default store path is ./jobreport-web-urls.json)
+/jobreport-web-urls.json
+/.jobreport-web-urls-*.json
+
 # Testing & Coverage
 *.test
 *.out
