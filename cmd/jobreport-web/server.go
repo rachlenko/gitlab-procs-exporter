@@ -125,7 +125,7 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 	// Serialize the store's read-modify-write so concurrent adds can't lose an
 	// update (the atomic rename prevents a corrupt file, not a lost update).
 	s.storeMu.Lock()
-	urls, err := s.store.Add(s.storePath, r.FormValue("url"))
+	urls, err := s.store.Add(s.storePath, r.FormValue("prom"))
 	s.storeMu.Unlock()
 	if err != nil {
 		secureHTML(w)
@@ -189,14 +189,10 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Effective Prometheus target: the dropdown selection, or a URL typed into the
-	// "add" field and submitted directly with Report (so you can run a report in one
-	// step without first clicking Add). A non-empty value is persisted best-effort
-	// so it joins the dropdown next time; an invalid one is surfaced by runReport.
+	// The Prometheus URL is a single combobox field (typed or picked from the saved
+	// list). A non-empty value is persisted best-effort so it joins the saved list
+	// next time; an invalid one is surfaced by runReport's validation.
 	prom := strings.TrimSpace(r.FormValue("prom"))
-	if prom == "" {
-		prom = strings.TrimSpace(r.FormValue("url"))
-	}
 	if prom != "" {
 		s.storeMu.Lock()
 		if _, err := s.store.Add(s.storePath, prom); err != nil {

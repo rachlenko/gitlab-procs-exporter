@@ -58,7 +58,7 @@ func TestHandleStatic_ServesHTMX(t *testing.T) {
 
 func TestHandlePrometheus_PersistsAndReturnsOption(t *testing.T) {
 	srv, storePath := newTestServer(t)
-	form := url.Values{"url": {"https://prom.example/"}}
+	form := url.Values{"prom": {"https://prom.example/"}}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prometheus", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -84,7 +84,7 @@ func TestHandlePrometheus_PersistsAndReturnsOption(t *testing.T) {
 
 func TestHandlePrometheus_InvalidURL_ErrorFragment(t *testing.T) {
 	srv, _ := newTestServer(t)
-	form := url.Values{"url": {"ftp://not-allowed/"}}
+	form := url.Values{"prom": {"ftp://not-allowed/"}}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prometheus", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -146,7 +146,7 @@ func TestHandleReport_MissingProm_ErrorFragment(t *testing.T) {
 func TestHandlePrometheusDelete_RemovesAndReturnsFragment(t *testing.T) {
 	srv, storePath := newTestServer(t)
 	for _, u := range []string{"https://keep.example/", "https://drop.example/"} {
-		form := url.Values{"url": {u}}
+		form := url.Values{"prom": {u}}
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prometheus", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		srv.routes().ServeHTTP(httptest.NewRecorder(), req)
@@ -171,25 +171,6 @@ func TestHandlePrometheusDelete_RemovesAndReturnsFragment(t *testing.T) {
 	data, _ := os.ReadFile(storePath)
 	if strings.Contains(string(data), "https://drop.example/") {
 		t.Errorf("delete: store still contains removed URL: %q", data)
-	}
-}
-
-func TestHandleReport_TypedURLFallback(t *testing.T) {
-	srv, storePath := newTestServer(t)
-	// Empty dropdown selection, URL typed into the add field and submitted with
-	// Report: it must be used and persisted (one-step run without clicking Add).
-	form := url.Values{"prom": {""}, "url": {"https://typed.example/"}}
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/report", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-
-	if !strings.Contains(rec.Body.String(), "https://typed.example/") {
-		t.Errorf("typed-url fallback: report did not use the typed URL, got %q", rec.Body.String())
-	}
-	data, _ := os.ReadFile(storePath)
-	if !strings.Contains(string(data), "https://typed.example/") {
-		t.Errorf("typed-url fallback: URL not persisted, store = %q", data)
 	}
 }
 

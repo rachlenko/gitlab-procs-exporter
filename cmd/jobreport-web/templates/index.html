@@ -50,29 +50,26 @@
     <legend>Prometheus</legend>
     <div class="row">
       <div style="flex: 1 1 auto;">
-        <label for="prom">Prometheus URL</label>
+        <label for="prom">Prometheus URL (type a new one or pick a saved one)</label>
+        <input id="prom" name="prom" type="text" list="prom-urls"
+               placeholder="https://prometheus.example/" style="width: 100%;"
+               {{with .URLs}}value="{{index . 0}}"{{end}}>
         {{template "urls" .URLs}}
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button type="button"
+                hx-post="/prometheus"
+                hx-include="#prom"
+                hx-target="#prom-urls"
+                hx-swap="outerHTML">Add</button>
       </div>
       <div style="flex: 0 0 auto;">
         <button type="button" class="danger"
                 hx-post="/prometheus/delete"
                 hx-include="#prom"
-                hx-target="#prom"
+                hx-target="#prom-urls"
                 hx-swap="outerHTML"
-                hx-confirm="Remove the selected Prometheus URL from the list?">Delete</button>
-      </div>
-    </div>
-    <div class="row" style="margin-top: 0.75rem;">
-      <div style="flex: 1 1 auto;">
-        <label for="new-url">Add a Prometheus URL</label>
-        <input id="new-url" type="text" name="url" placeholder="https://prometheus.example/" style="width: 100%;">
-      </div>
-      <div style="flex: 0 0 auto;">
-        <button type="button"
-                hx-post="/prometheus"
-                hx-include="#new-url"
-                hx-target="#prom"
-                hx-swap="outerHTML">Add</button>
+                hx-confirm="Remove this URL from the saved list?">Delete</button>
       </div>
     </div>
   </fieldset>

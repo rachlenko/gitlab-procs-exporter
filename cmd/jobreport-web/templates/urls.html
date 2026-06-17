@@ -1,7 +1,5 @@
-{{define "urls"}}<select id="prom" name="prom" style="width: 100%;">
+{{define "urls"}}<datalist id="prom-urls">
 {{- range .}}
-  <option value="{{.}}">{{.}}</option>
-{{- else}}
-  <option value="" disabled selected>no Prometheus URLs yet &mdash; add one</option>
+  <option value="{{.}}"></option>
 {{- end}}
-</select>{{end}}
+</datalist>{{end}}
