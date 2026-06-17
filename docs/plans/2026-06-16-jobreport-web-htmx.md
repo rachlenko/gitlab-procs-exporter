@@ -111,7 +111,7 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
 
 ## Phase E — Self-exec runner
 
-- [ ] E1. `cmd/jobreport-web/runner.go`: `runReport(selfPath, promURL, jobID,
+- [x] E1. `cmd/jobreport-web/runner.go`: `runReport(selfPath, promURL, jobID,
       window string) (output string, err error)`. Validate `jobID` matches
       `^\d+$` when non-empty (else error). Build args:
       `["report", "-prom", promURL]`, append `-job-id <id>` if set, append
@@ -119,7 +119,7 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
       context timeout (~90s), capture combined stdout+stderr, return as string
       (return output even on non-zero exit so the user sees the error text).
       `//nolint:gosec` on the exec with reason (args are validated, no shell).
-- [ ] E2. `cmd/jobreport-web/runner_test.go`: write a tiny fake script to a temp
+- [x] E2. `cmd/jobreport-web/runner_test.go`: write a tiny fake script to a temp
       file (e.g. a shell script that echoes its args and exits 0), point
       `selfPath` at it, and assert: args are constructed correctly (job-id/window
       omitted when empty, included when set); output is captured; invalid job id
