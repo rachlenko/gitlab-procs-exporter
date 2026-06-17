@@ -128,7 +128,7 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
 
 ## Phase F — Embedded assets, templates, handlers
 
-- [ ] F1. Add `cmd/jobreport-web/static/htmx.min.js` (vendored htmx ~1.9.x, a real
+- [x] F1. Add `cmd/jobreport-web/static/htmx.min.js` (vendored htmx ~1.9.x, a real
       file) and `cmd/jobreport-web/templates/{index.html,report.html,urls.html}`.
       `index.html`: Prometheus `<select id="prom">` populated from the store + a
       text input and "Add URL" button (`hx-post="/prometheus"`,
@@ -139,11 +139,11 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
       `<div id="results">`. Load htmx from `/static/htmx.min.js`.
       `report.html`: a `<pre>{{.}}</pre>` fragment (auto-escaped).
       `urls.html`: the `<select id="prom">…<option>…</select>` fragment.
-- [ ] F2. `cmd/jobreport-web/assets.go`: `//go:embed templates/*.html static/*`
+- [x] F2. `cmd/jobreport-web/assets.go`: `//go:embed templates/*.html static/*`
       into an `embed.FS`; parse templates once at startup; expose helpers to
       render the index page, the urls fragment, and the report fragment.
       **Verify:** `go build ./cmd/jobreport-web` compiles (embed paths resolve).
-- [ ] F3. Implement handlers in `server.go`:
+- [x] F3. Implement handlers in `server.go`:
       `GET /` → render index with stored URLs.
       `GET /static/...` → serve embedded static via `http.FileServer`.
       `POST /prometheus` → read `url` form field, `store.Add`, return urls.html
@@ -152,7 +152,7 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
       on window error return an error fragment; else `runReport` and return
       report.html with the raw output. Set security headers
       (`X-Content-Type-Options: nosniff`).
-- [ ] F4. `cmd/jobreport-web/server_test.go` (httptest): `GET /` returns 200 and
+- [x] F4. `cmd/jobreport-web/server_test.go` (httptest): `GET /` returns 200 and
       contains the form and the htmx script tag; `POST /prometheus` with a valid
       URL persists it and the response contains the new `<option>`; `POST /report`
       with a fake `selfPath` returns a `<pre>` containing the fake output; window
