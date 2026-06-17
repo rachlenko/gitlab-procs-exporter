@@ -38,6 +38,9 @@ func TestHandleIndex_OK(t *testing.T) {
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("GET /: X-Content-Type-Options = %q, want nosniff", got)
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("GET /: Cache-Control = %q, want no-store (avoid stale-form submits)", got)
+	}
 }
 
 func TestHandleStatic_ServesHTMX(t *testing.T) {

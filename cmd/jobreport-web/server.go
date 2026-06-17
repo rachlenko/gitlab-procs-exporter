@@ -82,10 +82,13 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 }
 
 // secureHTML sets the response content type to HTML and adds a conservative
-// nosniff header before any body is written.
+// nosniff header before any body is written. It also marks the response
+// no-store so a browser never submits a stale cached form (which would post an
+// out-of-date layout, e.g. an empty Prometheus field after a UI change).
 func secureHTML(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
 }
 
 // handleIndex renders the main page with the stored Prometheus URLs. Only the root
