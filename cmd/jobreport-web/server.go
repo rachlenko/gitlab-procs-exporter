@@ -118,6 +118,13 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		_ = renderError(w, runErr.Error())
 		return
 	}
+	if runErr != nil {
+		// Non-zero exit with captured output (e.g. Prometheus error, timeout
+		// kill with partial output). The output is shown to the user, but log
+		// the exec error so operators can see failures that the rendered text
+		// alone may not make obvious.
+		log.Printf("report exec: %v", runErr)
+	}
 
 	secureHTML(w)
 	if err := renderReport(w, output); err != nil {

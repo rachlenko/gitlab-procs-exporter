@@ -33,6 +33,37 @@ func TestParseFlagsPositionalAndFlagOrder(t *testing.T) {
 	}
 }
 
+func TestParseWindowArg(t *testing.T) {
+	t.Run("relative", func(t *testing.T) {
+		s, e, err := parseWindow("10m")
+		if err != nil {
+			t.Fatalf("parseWindow: %v", err)
+		}
+		if e-s != 600 {
+			t.Errorf("span = %ds, want 600", e-s)
+		}
+	})
+	t.Run("absolute ok", func(t *testing.T) {
+		s, e, err := parseWindow("100..200")
+		if err != nil {
+			t.Fatalf("parseWindow: %v", err)
+		}
+		if s != 100 || e != 200 {
+			t.Errorf("got %d..%d, want 100..200", s, e)
+		}
+	})
+	t.Run("absolute reversed rejected", func(t *testing.T) {
+		if _, _, err := parseWindow("200..100"); err == nil {
+			t.Error("parseWindow(200..100): want error, got nil")
+		}
+	})
+	t.Run("absolute equal rejected", func(t *testing.T) {
+		if _, _, err := parseWindow("100..100"); err == nil {
+			t.Error("parseWindow(100..100): want error, got nil")
+		}
+	})
+}
+
 func TestParseFlagsLocalFilePositional(t *testing.T) {
 	cfg, err := parseFlags([]string{"testdata/job.log", "-top", "3"})
 	if err != nil {

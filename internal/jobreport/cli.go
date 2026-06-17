@@ -196,6 +196,9 @@ func parseWindow(win string) (int64, int64, error) {
 		if err1 != nil || err2 != nil {
 			return 0, 0, fmt.Errorf("bad absolute window %q", win)
 		}
+		if e <= s {
+			return 0, 0, fmt.Errorf("bad absolute window %q: end must be after start", win)
+		}
 		return s, e, nil
 	}
 	if len(win) < 2 {
