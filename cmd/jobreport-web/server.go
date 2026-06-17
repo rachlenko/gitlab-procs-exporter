@@ -17,7 +17,7 @@ type Server struct {
 // NewServer builds a Server. selfPath should be os.Args[0]; it is the binary that
 // gets re-exec'd with a leading "report" argument to run jobreport.
 func NewServer(storePath, selfPath string) *Server {
-	return &Server{storePath: storePath, selfPath: selfPath}
+	return &Server{storePath: storePath, selfPath: selfPath, store: PrometheusStore{}}
 }
 
 // routes wires the HTTP handlers and returns the mux.

@@ -118,6 +118,55 @@ func TestHandleReport_ReturnsPreWithOutput(t *testing.T) {
 	}
 }
 
+func TestHandleReport_MissingProm_ErrorFragment(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// No prom field: runReport fails validation before exec, returning an error
+	// with empty output, which must surface as an error fragment (HTTP 200).
+	form := url.Values{"job_id": {"123"}}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/report", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /report missing prom: status = %d, want 200 (error fragment)", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="error"`) {
+		t.Errorf("POST /report missing prom: want an error fragment, got %q", body)
+	}
+	if strings.Contains(body, "<pre>") {
+		t.Errorf("POST /report missing prom: should not render a report <pre>, got %q", body)
+	}
+}
+
+func TestHandleReport_MethodNotAllowed(t *testing.T) {
+	srv, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/report", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /report: status = %d, want 405", rec.Code)
+	}
+}
+
+func TestHandlePrometheus_MethodNotAllowed(t *testing.T) {
+	srv, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/prometheus", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /prometheus: status = %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleIndex_UnknownPath_404(t *testing.T) {
+	srv, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/does-not-exist", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /does-not-exist: status = %d, want 404", rec.Code)
+	}
+}
+
 func TestHandleReport_WindowError_ErrorFragmentNot500(t *testing.T) {
 	srv, _ := newTestServer(t)
 	// Partial window (start date only) is invalid → error fragment, not a 500.

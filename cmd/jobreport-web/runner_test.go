@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -25,28 +26,24 @@ func TestRunReport_ArgsAndOutput(t *testing.T) {
 	self := writeFakeSelf(t)
 
 	cases := []struct {
-		name        string
-		jobID       string
-		window      string
-		wantArgs    []string
-		notWantArgs []string
+		name     string
+		jobID    string
+		window   string
+		wantArgs []string
 	}{
 		{
-			name:        "prom only",
-			wantArgs:    []string{"report", "-prom", "https://prom.test/"},
-			notWantArgs: []string{"-job-id", "-window"},
+			name:     "prom only",
+			wantArgs: []string{"report", "-prom", "https://prom.test/"},
 		},
 		{
-			name:        "with job id",
-			jobID:       "123",
-			wantArgs:    []string{"report", "-prom", "https://prom.test/", "-job-id", "123"},
-			notWantArgs: []string{"-window"},
+			name:     "with job id",
+			jobID:    "123",
+			wantArgs: []string{"report", "-prom", "https://prom.test/", "-job-id", "123"},
 		},
 		{
-			name:        "with window",
-			window:      "1767312000..1767317400",
-			wantArgs:    []string{"report", "-prom", "https://prom.test/", "-window", "1767312000..1767317400"},
-			notWantArgs: []string{"-job-id"},
+			name:     "with window",
+			window:   "1767312000..1767317400",
+			wantArgs: []string{"report", "-prom", "https://prom.test/", "-window", "1767312000..1767317400"},
 		},
 		{
 			name:     "with job id and window",
@@ -62,16 +59,12 @@ func TestRunReport_ArgsAndOutput(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: unexpected error: %v", tc.name, err)
 			}
+			// The fake self echoes each received arg on its own line, in order, so
+			// the output lines are exactly the constructed argument slice. Assert
+			// the full ordered slice to catch flag/value ordering or adjacency bugs.
 			lines := strings.Split(strings.TrimSpace(out), "\n")
-			for _, want := range tc.wantArgs {
-				if !containsLine(lines, want) {
-					t.Errorf("%s: expected arg %q in output %v", tc.name, want, lines)
-				}
-			}
-			for _, notWant := range tc.notWantArgs {
-				if containsLine(lines, notWant) {
-					t.Errorf("%s: did not expect arg %q in output %v", tc.name, notWant, lines)
-				}
+			if !reflect.DeepEqual(lines, tc.wantArgs) {
+				t.Errorf("%s: args = %v, want %v", tc.name, lines, tc.wantArgs)
 			}
 		})
 	}
@@ -93,14 +86,4 @@ func TestRunReport_EmptyPromURL(t *testing.T) {
 	if _, err := runReport(self, "", "123", ""); err == nil {
 		t.Fatalf("empty prom URL: want error, got nil")
 	}
-}
-
-// containsLine reports whether want appears as an exact element of lines.
-func containsLine(lines []string, want string) bool {
-	for _, l := range lines {
-		if l == want {
-			return true
-		}
-	}
-	return false
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -13,6 +14,17 @@ func TestPrometheusStore_LoadMissingFile(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("Load missing file: want empty slice, got %v", got)
+	}
+}
+
+func TestPrometheusStore_LoadMalformedJSON(t *testing.T) {
+	var s PrometheusStore
+	path := filepath.Join(t.TempDir(), "urls.json")
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatalf("write malformed store: %v", err)
+	}
+	if _, err := s.Load(path); err == nil {
+		t.Fatalf("Load malformed JSON: want a decode error, got nil")
 	}
 }
 

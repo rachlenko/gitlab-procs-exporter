@@ -44,9 +44,19 @@ func serve(argv []string) error {
 		return err
 	}
 
-	srv := NewServer(*store, os.Args[0])
+	srv := NewServer(*store, selfPath())
 	log.Printf("jobreport-web listening on %s (store %s)", *addr, *store)
 	return http.ListenAndServe(*addr, srv.routes()) //nolint:gosec // G114: internal tool, no timeouts needed; see README SSRF caveat
+}
+
+// selfPath returns the absolute path to this executable, used to re-exec the
+// report subcommand. It prefers os.Executable() (absolute and immune to cwd or
+// $PATH changes after startup) and falls back to os.Args[0] only if that fails.
+func selfPath() string {
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return os.Args[0]
 }
 
 // envOr returns $key if set and non-empty, else def.
