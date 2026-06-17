@@ -16,6 +16,15 @@ type Server struct {
 	selfPath  string          // path to this binary, re-exec'd as the report subcommand
 	store     PrometheusStore // persistence for the Prometheus URL list
 	storeMu   sync.Mutex      // serializes store mutations (read-modify-write in Add)
+	debug     bool            // when true, emit verbose [debug] logging
+}
+
+// dbg logs a verbose [debug] line only when debug mode is enabled.
+func (s *Server) dbg(format string, args ...any) {
+	if s.debug {
+		//nolint:gosec // G706: callers pass a constant format; tainted values use %q which escapes control chars
+		log.Printf("[debug] "+format, args...)
+	}
 }
 
 // NewServer builds a Server. selfPath should be os.Args[0]; it is the binary that
@@ -37,13 +46,14 @@ func (s *Server) routes() *http.ServeMux {
 // Handler returns the routes wrapped in request logging, for the live server.
 // Tests use routes() directly to keep their output quiet.
 func (s *Server) Handler() http.Handler {
-	return logRequests(s.routes())
+	return s.logRequests(s.routes())
 }
 
-// statusRecorder captures the response status code for access logging.
+// statusRecorder captures the response status code and byte count for logging.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
+	bytes  int
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -51,14 +61,23 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
-// logRequests logs one line per request: method, path, status, and duration.
-func logRequests(next http.Handler) http.Handler {
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
+}
+
+// logRequests logs one line per request: method, path, status, and duration. In
+// debug mode it also logs the response size and the client's remote address.
+func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
-		//nolint:gosec // G706: path logged with %q, which escapes any control characters
-		log.Printf("%s %q -> %d (%s)", r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
+		dur := time.Since(start).Round(time.Millisecond)
+		//nolint:gosec // G706: path/remote logged with %q, which escapes any control characters
+		log.Printf("%s %q -> %d (%s)", r.Method, r.URL.Path, rec.status, dur)
+		s.dbg("%s %q from %q: %d bytes in %s", r.Method, r.URL.Path, r.RemoteAddr, rec.bytes, dur)
 	})
 }
 
@@ -161,6 +180,7 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	//nolint:gosec // G706: values logged with %q, which escapes any control characters
 	log.Printf("report request: prom=%q job_id=%q window=%q", prom, r.FormValue("job_id"), window)
 	output, runErr := runReport(s.selfPath, prom, r.FormValue("job_id"), window)
+	s.dbg("report result: %d bytes output, exec err=%v", len(output), runErr)
 	if runErr != nil && output == "" {
 		// Validation failed before exec (e.g. missing prom URL, bad job id): no
 		// captured output to show, so surface the error text itself.

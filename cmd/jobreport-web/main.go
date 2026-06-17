@@ -40,12 +40,19 @@ func serve(argv []string) error {
 		"HTTP listen address (env JOBREPORT_WEB_ADDR)")
 	store := fs.String("store", envOr("JOBREPORT_WEB_STORE", "./jobreport-web-urls.json"),
 		"path to the Prometheus URL store JSON file (env JOBREPORT_WEB_STORE)")
+	debug := fs.Bool("debug", os.Getenv("JOBREPORT_WEB_DEBUG") != "",
+		"verbose debug logging: response sizes, remote addrs, report output sizes (env JOBREPORT_WEB_DEBUG)")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
 
 	srv := NewServer(*store, selfPath())
-	log.Printf("jobreport-web listening on %s (store %s)", *addr, *store)
+	srv.debug = *debug
+	//nolint:gosec // G706: addr/store are operator-supplied flags, not request data
+	log.Printf("jobreport-web listening on %s (store %s, debug=%t)", *addr, *store, *debug)
+	if *debug {
+		log.Printf("[debug] verbose logging enabled")
+	}
 	return http.ListenAndServe(*addr, srv.Handler()) //nolint:gosec // G114: internal tool, no timeouts needed; see README SSRF caveat
 }
 
