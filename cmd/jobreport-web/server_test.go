@@ -143,6 +143,56 @@ func TestHandleReport_MissingProm_ErrorFragment(t *testing.T) {
 	}
 }
 
+func TestHandlePrometheusDelete_RemovesAndReturnsFragment(t *testing.T) {
+	srv, storePath := newTestServer(t)
+	for _, u := range []string{"https://keep.example/", "https://drop.example/"} {
+		form := url.Values{"url": {u}}
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prometheus", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		srv.routes().ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	form := url.Values{"prom": {"https://drop.example/"}}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prometheus/delete", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /prometheus/delete: status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "https://drop.example/") {
+		t.Errorf("delete: fragment still contains the removed URL: %q", body)
+	}
+	if !strings.Contains(body, "https://keep.example/") {
+		t.Errorf("delete: fragment dropped the kept URL: %q", body)
+	}
+	data, _ := os.ReadFile(storePath)
+	if strings.Contains(string(data), "https://drop.example/") {
+		t.Errorf("delete: store still contains removed URL: %q", data)
+	}
+}
+
+func TestHandleReport_TypedURLFallback(t *testing.T) {
+	srv, storePath := newTestServer(t)
+	// Empty dropdown selection, URL typed into the add field and submitted with
+	// Report: it must be used and persisted (one-step run without clicking Add).
+	form := url.Values{"prom": {""}, "url": {"https://typed.example/"}}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/report", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), "https://typed.example/") {
+		t.Errorf("typed-url fallback: report did not use the typed URL, got %q", rec.Body.String())
+	}
+	data, _ := os.ReadFile(storePath)
+	if !strings.Contains(string(data), "https://typed.example/") {
+		t.Errorf("typed-url fallback: URL not persisted, store = %q", data)
+	}
+}
+
 func TestHandleReport_PersistsPromURL(t *testing.T) {
 	srv, storePath := newTestServer(t)
 	// The Prometheus URL is a single editable field; running a report must use it

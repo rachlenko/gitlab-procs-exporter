@@ -65,6 +65,51 @@ func TestPrometheusStore_AddDedupes(t *testing.T) {
 	}
 }
 
+func TestPrometheusStore_Remove(t *testing.T) {
+	var s PrometheusStore
+	path := filepath.Join(t.TempDir(), "urls.json")
+	if _, err := s.Add(path, "https://a.example/"); err != nil {
+		t.Fatalf("Add a: %v", err)
+	}
+	if _, err := s.Add(path, "https://b.example/"); err != nil {
+		t.Fatalf("Add b: %v", err)
+	}
+
+	got, err := s.Remove(path, "https://a.example/")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if len(got) != 1 || got[0] != "https://b.example/" {
+		t.Fatalf("Remove returned %v, want only b", got)
+	}
+	// Persisted: reload shows only b.
+	reloaded, _ := s.Load(path)
+	if len(reloaded) != 1 || reloaded[0] != "https://b.example/" {
+		t.Errorf("after Remove, store = %v, want [b]", reloaded)
+	}
+	// Removing an absent URL is a no-op, not an error.
+	again, err := s.Remove(path, "https://missing.example/")
+	if err != nil || len(again) != 1 {
+		t.Errorf("Remove(absent) = %v, %v; want [b], nil", again, err)
+	}
+}
+
+func TestPrometheusStore_RemoveSchemeless(t *testing.T) {
+	var s PrometheusStore
+	path := filepath.Join(t.TempDir(), "urls.json")
+	if _, err := s.Add(path, "prom.example.net"); err != nil { // stored as https://prom.example.net
+		t.Fatalf("Add: %v", err)
+	}
+	// Deleting by the bare host must match the normalized stored value.
+	got, err := s.Remove(path, "prom.example.net")
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Remove schemeless: store = %v, want empty", got)
+	}
+}
+
 func TestPrometheusStore_AddRejectsNonHTTP(t *testing.T) {
 	var s PrometheusStore
 	path := filepath.Join(t.TempDir(), "urls.json")

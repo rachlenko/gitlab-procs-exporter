@@ -28,6 +28,8 @@
       background: #238636; color: #fff; border-color: #2ea043; cursor: pointer;
     }
     button:hover { background: #2ea043; }
+    button.danger { background: #b62324; border-color: #da3633; }
+    button.danger:hover { background: #da3633; }
     .row { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; }
     .row > div { flex: 1 1 auto; }
     .time-group { display: flex; gap: 0.5rem; }
@@ -47,16 +49,30 @@
   <fieldset>
     <legend>Prometheus</legend>
     <div class="row">
-      <div>
+      <div style="flex: 1 1 auto;">
         <label for="prom">Prometheus URL</label>
-        <input id="prom" name="prom" type="text" list="prom-urls"
-               placeholder="https://prometheus.example/" style="width: 100%;"
-               {{with .URLs}}value="{{index . 0}}"{{end}}>
-        <datalist id="prom-urls">
-          {{- range .URLs}}
-          <option value="{{.}}"></option>
-          {{- end}}
-        </datalist>
+        {{template "urls" .URLs}}
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button type="button" class="danger"
+                hx-post="/prometheus/delete"
+                hx-include="#prom"
+                hx-target="#prom"
+                hx-swap="outerHTML"
+                hx-confirm="Remove the selected Prometheus URL from the list?">Delete</button>
+      </div>
+    </div>
+    <div class="row" style="margin-top: 0.75rem;">
+      <div style="flex: 1 1 auto;">
+        <label for="new-url">Add a Prometheus URL</label>
+        <input id="new-url" type="text" name="url" placeholder="https://prometheus.example/" style="width: 100%;">
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button type="button"
+                hx-post="/prometheus"
+                hx-include="#new-url"
+                hx-target="#prom"
+                hx-swap="outerHTML">Add</button>
       </div>
     </div>
   </fieldset>

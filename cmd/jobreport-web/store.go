@@ -59,6 +59,36 @@ func (s PrometheusStore) Add(path, rawURL string) ([]string, error) {
 	return urls, nil
 }
 
+// Remove deletes rawURL from the stored list (matching either the raw or the
+// normalized form), rewrites the file atomically, and returns the remaining list.
+// Removing a URL that is not present is a no-op (no error).
+func (s PrometheusStore) Remove(path, rawURL string) ([]string, error) {
+	urls, err := s.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	target := rawURL
+	if n, nerr := normalizeURL(rawURL); nerr == nil {
+		target = n
+	}
+	kept := make([]string, 0, len(urls))
+	removed := false
+	for _, u := range urls {
+		if u == rawURL || u == target {
+			removed = true
+			continue
+		}
+		kept = append(kept, u)
+	}
+	if !removed {
+		return urls, nil
+	}
+	if err := writeJSONAtomic(path, kept); err != nil {
+		return nil, err
+	}
+	return kept, nil
+}
+
 // normalizeURL canonicalizes a user-entered Prometheus URL. A missing scheme
 // defaults to https (matching the jobreport engine's newPromClient, which also
 // accepts scheme-less hosts and is what $PROMETHEUS_URL commonly holds), so a

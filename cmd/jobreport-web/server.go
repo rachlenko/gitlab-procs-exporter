@@ -39,6 +39,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	mux.HandleFunc("/prometheus", s.handlePrometheus)
+	mux.HandleFunc("/prometheus/delete", s.handlePrometheusDelete)
 	mux.HandleFunc("/report", s.handleReport)
 	return mux
 }
@@ -137,6 +138,32 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handlePrometheusDelete removes the posted URL from the store and returns the
+// refreshed urls fragment so the dropdown updates in place.
+func (s *Server) handlePrometheusDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		secureHTML(w)
+		_ = renderError(w, "could not read form")
+		return
+	}
+	s.storeMu.Lock()
+	urls, err := s.store.Remove(s.storePath, r.FormValue("prom"))
+	s.storeMu.Unlock()
+	if err != nil {
+		secureHTML(w)
+		_ = renderError(w, err.Error())
+		return
+	}
+	secureHTML(w)
+	if err := renderURLs(w, urls); err != nil {
+		log.Printf("render urls: %v", err)
+	}
+}
+
 // handleReport builds the (optional) UTC window from the six time fields, runs the
 // report via self-exec, and returns the output as a <pre> fragment. Validation
 // errors return an error fragment (HTTP 200) rather than a 500 so the user sees
@@ -162,10 +189,14 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The Prometheus URL is a single editable field (typed or chosen from the saved
-	// suggestions). Persist a non-empty value best-effort so it is offered as a
-	// suggestion next time; an invalid one is surfaced by runReport's validation.
+	// Effective Prometheus target: the dropdown selection, or a URL typed into the
+	// "add" field and submitted directly with Report (so you can run a report in one
+	// step without first clicking Add). A non-empty value is persisted best-effort
+	// so it joins the dropdown next time; an invalid one is surfaced by runReport.
 	prom := strings.TrimSpace(r.FormValue("prom"))
+	if prom == "" {
+		prom = strings.TrimSpace(r.FormValue("url"))
+	}
 	if prom != "" {
 		s.storeMu.Lock()
 		if _, err := s.store.Add(s.storePath, prom); err != nil {
