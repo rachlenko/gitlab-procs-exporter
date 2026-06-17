@@ -52,32 +52,71 @@ func newPromClient(base string) *promClient {
 	return &promClient{base: base, http: &http.Client{Timeout: 30 * time.Second}}
 }
 
+// Retry policy for transient upstream failures. A Prometheus behind a reverse
+// proxy (e.g. nginx) intermittently returns 502/503/504 while it restarts or is
+// briefly unreachable; a couple of quick retries turn most of those into a
+// successful response instead of surfacing a confusing gateway error.
+const maxAttempts = 3
+
+// retryBackoff is the base delay between attempts (attempt N waits N*backoff). It
+// is a var so tests can set it to zero.
+var retryBackoff = 500 * time.Millisecond
+
+// retryableStatus reports whether an HTTP status is a transient gateway failure
+// worth retrying.
+func retryableStatus(code int) bool {
+	switch code {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *promClient) get(path string, q url.Values) (*promResp, error) {
 	u := c.base + path + "?" + q.Encode()
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		pr, retry, err := c.getOnce(u)
+		if err == nil {
+			return pr, nil
+		}
+		lastErr = err
+		if !retry || attempt == maxAttempts {
+			break
+		}
+		time.Sleep(retryBackoff * time.Duration(attempt))
+	}
+	return nil, lastErr
+}
+
+// getOnce performs a single GET. The bool reports whether a failure is transient
+// (a transport error or a 5xx gateway status) and therefore worth retrying.
+func (c *promClient) getOnce(u string) (*promResp, bool, error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, true, err // transport-level failure: retry
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("prometheus HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, retryableStatus(resp.StatusCode), fmt.Errorf("prometheus HTTP %d: %s", resp.StatusCode, string(body))
 	}
 	var pr promResp
 	if err := json.Unmarshal(body, &pr); err != nil {
-		return nil, fmt.Errorf("prometheus decode: %w", err)
+		return nil, false, fmt.Errorf("prometheus decode: %w", err)
 	}
 	if pr.Status != "success" {
-		return nil, fmt.Errorf("prometheus status=%s", pr.Status)
+		return nil, false, fmt.Errorf("prometheus status=%s", pr.Status)
 	}
-	return &pr, nil
+	return &pr, false, nil
 }
 
 // queryInstant runs an instant query at time t (unix seconds).

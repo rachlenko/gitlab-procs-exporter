@@ -4,8 +4,76 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+func TestPromClientRetriesTransient5xx(t *testing.T) {
+	old := retryBackoff
+	retryBackoff = 0
+	defer func() { retryBackoff = old }()
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// First two attempts 502, third succeeds — mimics a flapping upstream.
+		if atomic.AddInt32(&calls, 1) < 3 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("502"))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+	}))
+	defer srv.Close()
+
+	if _, err := newPromClient(srv.URL).queryInstant("up", 0); err != nil {
+		t.Fatalf("want success after retries, got %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Errorf("calls = %d, want 3 (two 502s then success)", got)
+	}
+}
+
+func TestPromClientGivesUpAfterMaxAttempts(t *testing.T) {
+	old := retryBackoff
+	retryBackoff = 0
+	defer func() { retryBackoff = old }()
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("502"))
+	}))
+	defer srv.Close()
+
+	if _, err := newPromClient(srv.URL).queryInstant("up", 0); err == nil {
+		t.Fatal("want error after exhausting retries on persistent 502")
+	}
+	if got := atomic.LoadInt32(&calls); got != maxAttempts {
+		t.Errorf("calls = %d, want %d (one per attempt)", got, maxAttempts)
+	}
+}
+
+func TestPromClientNoRetryOn4xx(t *testing.T) {
+	old := retryBackoff
+	retryBackoff = 0
+	defer func() { retryBackoff = old }()
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("400"))
+	}))
+	defer srv.Close()
+
+	if _, err := newPromClient(srv.URL).queryInstant("up", 0); err == nil {
+		t.Fatal("want error on 400")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("calls = %d, want 1 (4xx must not be retried)", got)
+	}
+}
 
 func TestNewPromClientBase(t *testing.T) {
 	cases := []struct{ in, want string }{
