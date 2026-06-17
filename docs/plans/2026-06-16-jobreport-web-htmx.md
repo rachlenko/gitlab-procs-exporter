@@ -69,7 +69,7 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
 
 ## Phase B — Scaffold `cmd/jobreport-web` with self-exec dispatch
 
-- [ ] B1. Create `cmd/jobreport-web/main.go` (`package main`) that dispatches:
+- [x] B1. Create `cmd/jobreport-web/main.go` (`package main`) that dispatches:
       if `len(os.Args) > 1 && os.Args[1] == "report"`, call
       `os.Exit(jobreport.Main(os.Args[2:]))` (the binary acts AS jobreport);
       otherwise parse web flags and start the server. Web flags (with env
@@ -77,7 +77,7 @@ Goal: move the report logic out of `package main` so both `cmd/jobreport` and
       (default `./jobreport-web-urls.json`, env `JOBREPORT_WEB_STORE`).
       **Verify:** `go build ./cmd/jobreport-web` compiles; running it with
       `report -h` prints jobreport usage (proves self-exec dispatch).
-- [ ] B2. Add `internal/jobreport` import and a minimal `server.go` with a
+- [x] B2. Add `internal/jobreport` import and a minimal `server.go` with a
       `Server` struct holding the store path and self-binary path
       (`selfPath string`, default `os.Args[0]`), plus a `routes()` returning an
       `*http.ServeMux`. Stub the three handlers to return 200 for now.
