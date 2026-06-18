@@ -35,7 +35,8 @@ func runReport(selfPath, promURL, jobID, window string) (string, error) {
 		return "", err
 	}
 	if jobID != "" && !jobIDPattern.MatchString(jobID) {
-		return "", fmt.Errorf("invalid job id %q: want digits only", jobID)
+		return "", fmt.Errorf("invalid job id %q: use the numeric GitLab job id "+
+			"(e.g. 127743797, from the .../-/jobs/<id> URL), not the runner system id", jobID)
 	}
 
 	args := []string{"report", "-prom", normalized}

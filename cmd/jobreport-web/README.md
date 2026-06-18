@@ -31,6 +31,27 @@ go build -o jobreport-web ./cmd/jobreport-web
 ./jobreport-web report -h
 ```
 
+## Install with `go install`
+
+Because it is a self-contained `package main` (assets embedded via `go:embed`),
+`go install` builds and installs it straight to `$GOBIN` (or `$GOPATH/bin`):
+
+```bash
+# Pinned to the main branch (use this until a release tag includes jobreport-web):
+go install github.com/rachlenko/gitlab-procs-exporter/cmd/jobreport-web@main
+
+# Once a tag >= the first release containing this package exists, @latest works too:
+go install github.com/rachlenko/gitlab-procs-exporter/cmd/jobreport-web@latest
+
+# Then run it (ensure $GOBIN / $(go env GOPATH)/bin is on your PATH):
+jobreport-web -addr :8088
+```
+
+Note: `@latest` resolves to the newest **semver tag**. The latest tag (`v0.0.10`)
+predates this package, so `@latest` currently fails with "found (v0.0.10), but
+does not contain package …/cmd/jobreport-web" — use `@main` (or `@<commit>`) until
+a newer tag is cut. From a checkout, `go install ./cmd/jobreport-web` always works.
+
 ## Flags & environment
 
 | Flag     | Env var               | Default                       | Meaning                                            |
