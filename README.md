@@ -100,6 +100,27 @@ You can control the interval at which the background scraper sweeps system proce
 sudo ./gitlab-procs-exporter --port=8000 --interval=1m
 ```
 
+### `jobreport-web` — browser UI for on-demand reports
+
+[`jobreport-web`](cmd/jobreport-web/README.md) is a separate, single self-contained
+binary (HTML/htmx/CSS embedded via `go:embed`; the report engine runs by the binary
+self-exec'ing). Install it straight from the module with `go install`:
+
+```bash
+# Latest release tag (>= v0.0.11, the first tag that contains the package):
+go install github.com/rachlenko/gitlab-procs-exporter/cmd/jobreport-web@latest
+
+# Or pin to the main branch / a specific commit:
+go install github.com/rachlenko/gitlab-procs-exporter/cmd/jobreport-web@main
+
+# Run it (ensure $(go env GOPATH)/bin is on your PATH), then open http://localhost:8088
+jobreport-web -addr :8088
+```
+
+From a checkout you can also `go install ./cmd/jobreport-web` or `make build`
+(produces `.bin/jobreport-web`). See its [README](cmd/jobreport-web/README.md) for
+flags (`-addr`, `-store`, `-debug`) and the internal-tool/SSRF caveat.
+
 ---
 
 ## 2. Prometheus Configuration (`prometheus.yml`)
