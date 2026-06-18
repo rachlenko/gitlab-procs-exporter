@@ -30,7 +30,7 @@ func TestHandleIndex_OK(t *testing.T) {
 		t.Fatalf("GET /: status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{`<form`, `/static/htmx.min.js`, `id="prom"`, `hx-post="/report"`} {
+	for _, want := range []string{`<form`, `/static/htmx.min.js`, `id="prom-list"`, `hx-post="/report"`, `hx-post="/prometheus"`, `id="report-status"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("GET /: body missing %q", want)
 		}
@@ -58,7 +58,7 @@ func TestHandleStatic_ServesHTMX(t *testing.T) {
 
 func TestHandlePrometheus_PersistsAndReturnsOption(t *testing.T) {
 	srv, storePath := newTestServer(t)
-	form := url.Values{"prom": {"https://prom.example/"}}
+	form := url.Values{"url": {"https://prom.example/"}}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prometheus", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -68,8 +68,8 @@ func TestHandlePrometheus_PersistsAndReturnsOption(t *testing.T) {
 		t.Fatalf("POST /prometheus: status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `<option value="https://prom.example/">`) {
-		t.Errorf("POST /prometheus: response missing the new option, got %q", body)
+	if !strings.Contains(body, `value="https://prom.example/"`) {
+		t.Errorf("POST /prometheus: response missing the new radio option, got %q", body)
 	}
 
 	// The URL must have been persisted to the store file.
@@ -84,7 +84,7 @@ func TestHandlePrometheus_PersistsAndReturnsOption(t *testing.T) {
 
 func TestHandlePrometheus_InvalidURL_ErrorFragment(t *testing.T) {
 	srv, _ := newTestServer(t)
-	form := url.Values{"prom": {"ftp://not-allowed/"}}
+	form := url.Values{"url": {"ftp://not-allowed/"}}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prometheus", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -146,7 +146,7 @@ func TestHandleReport_MissingProm_ErrorFragment(t *testing.T) {
 func TestHandlePrometheusDelete_RemovesAndReturnsFragment(t *testing.T) {
 	srv, storePath := newTestServer(t)
 	for _, u := range []string{"https://keep.example/", "https://drop.example/"} {
-		form := url.Values{"prom": {u}}
+		form := url.Values{"url": {u}}
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/prometheus", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		srv.routes().ServeHTTP(httptest.NewRecorder(), req)
@@ -174,11 +174,10 @@ func TestHandlePrometheusDelete_RemovesAndReturnsFragment(t *testing.T) {
 	}
 }
 
-func TestHandleReport_PersistsPromURL(t *testing.T) {
-	srv, storePath := newTestServer(t)
-	// The Prometheus URL is a single editable field; running a report must use it
-	// AND persist it so it is offered as a suggestion next time.
-	form := url.Values{"prom": {"https://typed.example/"}}
+func TestHandleReport_UsesSelectedURL(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// The selected radio supplies prom; the report must run against it.
+	form := url.Values{"prom": {"https://selected.example/"}}
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/report", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -188,15 +187,29 @@ func TestHandleReport_PersistsPromURL(t *testing.T) {
 		t.Fatalf("POST /report: status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "<pre>") || !strings.Contains(body, "https://typed.example/") {
-		t.Errorf("POST /report: want a report referencing the URL, got %q", body)
+	if !strings.Contains(body, "<pre>") || !strings.Contains(body, "https://selected.example/") {
+		t.Errorf("POST /report: want a report referencing the selected URL, got %q", body)
 	}
-	data, err := os.ReadFile(storePath)
-	if err != nil {
-		t.Fatalf("read store: %v", err)
+}
+
+func TestHandleReport_NoSelection_ErrorFragment(t *testing.T) {
+	srv, _ := newTestServer(t)
+	// No prom selected: must return a clear "select a URL" error fragment, not run.
+	form := url.Values{"job_id": {"123"}}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/report", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /report no selection: status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(string(data), "https://typed.example/") {
-		t.Errorf("POST /report: URL was not persisted, store = %q", data)
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="error"`) || !strings.Contains(body, "select") {
+		t.Errorf("POST /report no selection: want a 'select a URL' error fragment, got %q", body)
+	}
+	if strings.Contains(body, "<pre>") {
+		t.Errorf("POST /report no selection: should not run a report, got %q", body)
 	}
 }
 

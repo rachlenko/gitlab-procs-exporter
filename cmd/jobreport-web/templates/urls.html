@@ -1,5 +1,11 @@
-{{define "urls"}}<datalist id="prom-urls">
+{{define "urls"}}
 {{- range .}}
-  <option value="{{.}}"></option>
+<label class="prom-option">
+  <input type="radio" name="prom" value="{{.}}">
+  <span class="check">&#10003;</span>
+  <span class="url">{{.}}</span>
+</label>
+{{- else}}
+<p class="muted">No Prometheus URLs saved yet &mdash; add one below.</p>
 {{- end}}
-</datalist>{{end}}
+{{end}}

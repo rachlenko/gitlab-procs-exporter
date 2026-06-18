@@ -125,7 +125,7 @@ func (s *Server) handlePrometheus(w http.ResponseWriter, r *http.Request) {
 	// Serialize the store's read-modify-write so concurrent adds can't lose an
 	// update (the atomic rename prevents a corrupt file, not a lost update).
 	s.storeMu.Lock()
-	urls, err := s.store.Add(s.storePath, r.FormValue("prom"))
+	urls, err := s.store.Add(s.storePath, r.FormValue("url"))
 	s.storeMu.Unlock()
 	if err != nil {
 		secureHTML(w)
@@ -189,16 +189,13 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The Prometheus URL is a single combobox field (typed or picked from the saved
-	// list). A non-empty value is persisted best-effort so it joins the saved list
-	// next time; an invalid one is surfaced by runReport's validation.
+	// The Prometheus URL must be selected from the list (the checked radio). If none
+	// is selected, tell the user to pick one rather than running an empty query.
 	prom := strings.TrimSpace(r.FormValue("prom"))
-	if prom != "" {
-		s.storeMu.Lock()
-		if _, err := s.store.Add(s.storePath, prom); err != nil {
-			s.dbg("persist prometheus url %q: %v", prom, err)
-		}
-		s.storeMu.Unlock()
+	if prom == "" {
+		secureHTML(w)
+		_ = renderError(w, "Please select a Prometheus URL above (or add one), then click Report.")
+		return
 	}
 
 	//nolint:gosec // G706: values logged with %q, which escapes any control characters

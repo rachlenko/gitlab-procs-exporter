@@ -40,6 +40,33 @@
       padding: 1rem; overflow: auto; white-space: pre-wrap; word-break: break-word;
     }
     .error { color: #f85149; }
+    .muted { color: #8b949e; font-size: 0.85rem; margin: 0.25rem 0; }
+
+    /* Selectable Prometheus URL list */
+    #prom-list { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.75rem; }
+    .prom-option {
+      display: flex; align-items: center; gap: 0.5rem; cursor: pointer;
+      padding: 0.45rem 0.6rem; border: 1px solid #30363d; border-radius: 6px;
+      color: #c9d1d9; margin: 0;
+    }
+    .prom-option:hover { border-color: #1f6feb; }
+    .prom-option input { width: auto; margin: 0; }
+    .prom-option .check { visibility: hidden; color: #3fb950; font-weight: bold; }
+    .prom-option .url { word-break: break-all; flex: 1 1 auto; }
+    /* highlight the selected (checked) URL with a background + checkmark */
+    .prom-option:has(input:checked) { background: #14361f; border-color: #2ea043; }
+    .prom-option:has(input:checked) .check { visibility: visible; }
+
+    /* htmx loading indicator: a banner that appears during a report request */
+    #report-status {
+      margin: 0.75rem 0; padding: 0.5rem 0.75rem; border-radius: 6px;
+      background: #1c2c44; border: 1px solid #1f6feb; color: #c9d1d9;
+      opacity: 0; height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden;
+      transition: opacity 150ms ease-in;
+    }
+    #report-status.htmx-request {
+      opacity: 1; height: auto; padding-top: 0.5rem; padding-bottom: 0.5rem;
+    }
   </style>
 </head>
 <body>
@@ -47,29 +74,29 @@
 
   <form>
   <fieldset>
-    <legend>Prometheus</legend>
+    <legend>Prometheus URL</legend>
+    <label>Select the URL to query (or add a new one)</label>
+    <div id="prom-list">
+      {{template "urls" .URLs}}
+    </div>
     <div class="row">
       <div style="flex: 1 1 auto;">
-        <label for="prom">Prometheus URL (type a new one or pick a saved one)</label>
-        <input id="prom" name="prom" type="text" list="prom-urls"
-               placeholder="https://prometheus.example/" style="width: 100%;"
-               {{with .URLs}}value="{{index . 0}}"{{end}}>
-        {{template "urls" .URLs}}
+        <input id="new-url" type="text" name="url" placeholder="https://prometheus.example/" style="width: 100%;">
       </div>
       <div style="flex: 0 0 auto;">
         <button type="button"
                 hx-post="/prometheus"
-                hx-include="#prom"
-                hx-target="#prom-urls"
-                hx-swap="outerHTML">Add</button>
+                hx-include="#new-url"
+                hx-target="#prom-list"
+                hx-swap="innerHTML">Add</button>
       </div>
       <div style="flex: 0 0 auto;">
         <button type="button" class="danger"
                 hx-post="/prometheus/delete"
-                hx-include="#prom"
-                hx-target="#prom-urls"
-                hx-swap="outerHTML"
-                hx-confirm="Remove this URL from the saved list?">Delete</button>
+                hx-include="[name='prom']:checked"
+                hx-target="#prom-list"
+                hx-swap="innerHTML"
+                hx-confirm="Remove the selected Prometheus URL from the list?">Delete selected</button>
       </div>
     </div>
   </fieldset>
@@ -112,7 +139,10 @@
             hx-post="/report"
             hx-include="closest form"
             hx-target="#results"
-            hx-swap="innerHTML">Report</button>
+            hx-swap="innerHTML"
+            hx-indicator="#report-status">Report</button>
+
+    <div id="report-status" aria-live="polite">⏳ Running report — contacting the selected Prometheus URL…</div>
   </form>
 
   <div id="results"></div>
