@@ -168,3 +168,49 @@ func TestIsSecretValue(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessCollectorKeyInExtra(t *testing.T) {
+	store := NewHistoryStore()
+	// Constructor must normalize: mixed case and surrounding spaces.
+	pc := NewProcessCollector(store, "Vault", "  Internal_Token  ")
+	if !pc.keyInExtra("VAULT_ADDR") {
+		t.Error("expected VAULT_ADDR to match configured 'vault'")
+	}
+	if !pc.keyInExtra("MY_INTERNAL_TOKEN_X") {
+		t.Error("expected MY_INTERNAL_TOKEN_X to match 'internal_token'")
+	}
+	if pc.keyInExtra("CI_JOB_NAME") {
+		t.Error("did not expect CI_JOB_NAME to match")
+	}
+	if NewProcessCollector(store).keyInExtra("ANYTHING") {
+		t.Error("no extras configured: nothing should match")
+	}
+}
+
+func TestScrubEnvironConfiguredKey(t *testing.T) {
+	pc := NewProcessCollector(NewHistoryStore(), "vault")
+	out := pc.scrubEnviron(map[string]string{
+		"VAULT_ADDR":  "https://vault.example:8200", // key not in built-in denylist; value not secret-shaped
+		"CI_JOB_NAME": "build",
+	})
+	if !strings.Contains(out, "VAULT_ADDR=[REDACTED]") {
+		t.Errorf("expected VAULT_ADDR redacted via configured substring, got %q", out)
+	}
+	if strings.Contains(out, "vault.example") {
+		t.Errorf("configured-secret value leaked: %q", out)
+	}
+	if !strings.Contains(out, "CI_JOB_NAME=build") {
+		t.Errorf("expected CI_JOB_NAME to pass through, got %q", out)
+	}
+}
+
+func TestScrubEnvironBuiltinStillWorks(t *testing.T) {
+	pc := NewProcessCollector(NewHistoryStore()) // no extras
+	out := pc.scrubEnviron(map[string]string{"API_KEY": "abc", "USER": "gitlab"})
+	if !strings.Contains(out, "API_KEY=[REDACTED]") {
+		t.Errorf("expected built-in denylist to redact API_KEY, got %q", out)
+	}
+	if !strings.Contains(out, "USER=gitlab") {
+		t.Errorf("expected USER to pass through, got %q", out)
+	}
+}

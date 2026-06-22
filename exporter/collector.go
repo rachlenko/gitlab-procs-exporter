@@ -12,6 +12,10 @@ import (
 type ProcessCollector struct {
 	store *HistoryStore
 
+	// extraKeySubstrings are operator-configured key-name substrings that
+	// augment the built-in IsSecretKey denylist (normalized: lowercase, trimmed).
+	extraKeySubstrings []string
+
 	// Metric Descriptors
 	cpuDesc     *prometheus.Desc
 	rssDesc     *prometheus.Desc
@@ -22,11 +26,12 @@ type ProcessCollector struct {
 }
 
 // NewProcessCollector creates and initializes a ProcessCollector.
-func NewProcessCollector(store *HistoryStore) *ProcessCollector {
+func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *ProcessCollector {
 	commonLabels := []string{"pid", "name"}
 
 	return &ProcessCollector{
-		store: store,
+		store:              store,
+		extraKeySubstrings: normalizeSubstrings(extraKeySubstrings),
 		cpuDesc: prometheus.NewDesc(
 			"gitlab_process_cpu_seconds_total",
 			"Total user and system CPU time spent in seconds.",
@@ -60,6 +65,33 @@ func NewProcessCollector(store *HistoryStore) *ProcessCollector {
 	}
 }
 
+// keyInExtra reports whether key matches any operator-configured substring.
+func (pc *ProcessCollector) keyInExtra(key string) bool {
+	k := strings.ToLower(key)
+	for _, s := range pc.extraKeySubstrings {
+		if strings.Contains(k, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// scrubEnviron renders the environ map as a comma-joined "k=v" string,
+// redacting any pair whose key or value looks sensitive: the built-in
+// denylist (IsSecretKey), operator-configured substrings (keyInExtra), or
+// the value-shape heuristics (IsSecretValue).
+func (pc *ProcessCollector) scrubEnviron(environ map[string]string) string {
+	var envPairs []string
+	for k, v := range environ {
+		val := v
+		if IsSecretKey(k) || pc.keyInExtra(k) || IsSecretValue(v) {
+			val = "[REDACTED]"
+		}
+		envPairs = append(envPairs, fmt.Sprintf("%s=%s", k, val))
+	}
+	return strings.Join(envPairs, ", ")
+}
+
 // Describe implements the prometheus.Collector interface.
 func (pc *ProcessCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- pc.cpuDesc
@@ -85,19 +117,8 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(pc.ioReadDesc, prometheus.CounterValue, float64(p.IORead), labels...)
 		ch <- prometheus.MustNewConstMetric(pc.ioWriteDesc, prometheus.CounterValue, float64(p.IOWrite), labels...)
 
-		// Scrub environment variables for security before exposing via metrics
-		var envPairs []string
-		for k, v := range p.Environ {
-			val := v
-			if IsSecretKey(k) || IsSecretValue(v) {
-				val = "[REDACTED]"
-			}
-			envPairs = append(envPairs, fmt.Sprintf("%s=%s", k, val))
-		}
-		envStr := strings.Join(envPairs, ", ")
-
-		// Emit metadata info metric
-		infoLabels := []string{pidStr, p.Name, p.CmdLine, envStr}
+		// Emit metadata info metric (environ scrubbed for secrets)
+		infoLabels := []string{pidStr, p.Name, p.CmdLine, pc.scrubEnviron(p.Environ)}
 		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
 	}
 }
