@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -88,7 +89,7 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		var envPairs []string
 		for k, v := range p.Environ {
 			val := v
-			if IsSecretKey(k) {
+			if IsSecretKey(k) || IsSecretValue(v) {
 				val = "[REDACTED]"
 			}
 			envPairs = append(envPairs, fmt.Sprintf("%s=%s", k, val))
@@ -101,14 +102,72 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-// IsSecretKey checks if the key contains common terms that suggest it holds sensitive credentials/secrets.
+// IsSecretKey checks if the key name suggests it holds sensitive credentials.
 func IsSecretKey(key string) bool {
 	k := strings.ToLower(key)
-	secrets := []string{"key", "pass", "token", "secret", "auth", "pwd", "db", "url", "private", "crypt", "credential", "signature", "api"}
+	secrets := []string{
+		"key", "pass", "passwd", "token", "secret", "auth", "pwd", "db", "url",
+		"private", "crypt", "credential", "signature", "api",
+		"cert", "ssh", "gpg", "jwt", "bearer", "access", "cookie", "session",
+		"salt", "otp", "webhook", "dsn", "connection", "client_secret", "sas",
+	}
 	for _, s := range secrets {
 		if strings.Contains(k, s) {
 			return true
 		}
 	}
 	return false
+}
+
+// tokenPrefixes are well-known secret/token prefixes.
+var tokenPrefixes = []string{
+	"glpat-", "gho_", "ghp_", "ghu_", "ghs_", "github_pat_",
+	"AKIA", "xoxb-", "xoxp-", "xoxa-",
+}
+
+// IsSecretValue reports whether a value looks like a secret regardless of key.
+func IsSecretValue(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, p := range tokenPrefixes {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	// JWT: "eyJ" header + two dot-separated segments.
+	if strings.HasPrefix(v, "eyJ") && strings.Count(v, ".") == 2 {
+		return true
+	}
+	// Long, high-entropy token-charset string.
+	if len(v) >= 32 && isTokenCharset(v) && shannonEntropy(v) >= 3.5 {
+		return true
+	}
+	return false
+}
+
+func isTokenCharset(v string) bool {
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '+' || r == '/' || r == '=' || r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func shannonEntropy(v string) float64 {
+	counts := make(map[rune]float64)
+	for _, r := range v {
+		counts[r]++
+	}
+	n := float64(len(v))
+	var h float64
+	for _, c := range counts {
+		p := c / n
+		h -= p * math.Log2(p)
+	}
+	return h
 }
