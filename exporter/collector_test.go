@@ -137,6 +137,15 @@ func TestIsSecretKeyExpanded(t *testing.T) {
 			t.Errorf("expected key %q to be marked as secret", s)
 		}
 	}
+
+	// Keys containing "sas" that are NOT secrets — removed from denylist to
+	// avoid over-redacting benign env vars like DATABASES_COUNT or ALIASES.
+	benign := []string{"DATABASES_COUNT", "RELEASES_DIR", "INVASAS", "SASQUATCH_HOME"}
+	for _, k := range benign {
+		if IsSecretKey(k) {
+			t.Errorf("expected key %q to NOT be marked as secret (over-redaction)", k)
+		}
+	}
 }
 
 func TestIsSecretValue(t *testing.T) {

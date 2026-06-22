@@ -119,6 +119,25 @@ func TestParsePodList(t *testing.T) {
 	}
 }
 
+func TestParsePodListMissingRequests(t *testing.T) {
+	// Container with no resources/requests field must produce zero values, not an error.
+	raw := []byte(`{"items":[{"metadata":{"uid":"pod-noreq"},"spec":{"containers":[{"name":"c"}]}}]}`)
+	pods, err := parsePodList(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(pods) != 1 {
+		t.Fatalf("expected 1 pod, got %d", len(pods))
+	}
+	p := pods[0]
+	if p.CPURequest != 0 {
+		t.Errorf("CPURequest = %v, want 0", p.CPURequest)
+	}
+	if p.MemRequest != 0 {
+		t.Errorf("MemRequest = %v, want 0", p.MemRequest)
+	}
+}
+
 func TestKubeletClientPods(t *testing.T) {
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/pods" {

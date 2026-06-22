@@ -109,7 +109,7 @@ func IsSecretKey(key string) bool {
 		"key", "pass", "passwd", "token", "secret", "auth", "pwd", "db", "url",
 		"private", "crypt", "credential", "signature", "api",
 		"cert", "ssh", "gpg", "jwt", "bearer", "access", "cookie", "session",
-		"salt", "otp", "webhook", "dsn", "connection", "client_secret", "sas",
+		"salt", "otp", "webhook", "dsn", "connection", "client_secret",
 	}
 	for _, s := range secrets {
 		if strings.Contains(k, s) {
@@ -119,14 +119,13 @@ func IsSecretKey(key string) bool {
 	return false
 }
 
-// tokenPrefixes are well-known secret/token prefixes.
-var tokenPrefixes = []string{
-	"glpat-", "gho_", "ghp_", "ghu_", "ghs_", "github_pat_",
-	"AKIA", "xoxb-", "xoxp-", "xoxa-",
-}
-
 // IsSecretValue reports whether a value looks like a secret regardless of key.
 func IsSecretValue(v string) bool {
+	// tokenPrefixes is read-only.
+	tokenPrefixes := []string{
+		"glpat-", "gho_", "ghp_", "ghu_", "ghs_", "github_pat_",
+		"AKIA", "xoxb-", "xoxp-", "xoxa-",
+	}
 	if v == "" {
 		return false
 	}

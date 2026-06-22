@@ -18,7 +18,7 @@ func TestKubeCollector(t *testing.T) {
 		Environ:   map[string]string{"CI_JOB_NAME": "build"},
 		IsActive:  true,
 	})
-	// Process without pod UID or job name must not emit anything.
+	// Process with neither PodUID nor CI_JOB_NAME must not emit anything.
 	store.AddSample(ProcessSample{
 		Timestamp: time.Now(),
 		PID:       101,
@@ -64,5 +64,8 @@ func TestKubeCollectorDedupJobName(t *testing.T) {
 	// Same job_name on two pods must collapse to exactly one series per metric.
 	if n := testutil.CollectAndCount(c, "kuber_cpu_request"); n != 1 {
 		t.Errorf("expected 1 kuber_cpu_request series, got %d", n)
+	}
+	if n := testutil.CollectAndCount(c, "kuber_memory_request"); n != 1 {
+		t.Errorf("expected 1 kuber_memory_request series, got %d", n)
 	}
 }
