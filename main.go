@@ -45,6 +45,8 @@ func main() {
 		"systemd unit name")
 	serviceUser := flag.String("service-user", "root",
 		"User the service runs as (root is required to read all processes' env/IO)")
+	kubeletInsecure := flag.Bool("kubelet-insecure", true,
+		"Skip TLS verification when querying the node-local kubelet (in-cluster only)")
 	flag.Parse()
 
 	if *showVersion {
@@ -96,12 +98,27 @@ func main() {
 
 	store := exporter.NewHistoryStore()
 
+	inCluster := exporter.InCluster()
+
 	// Start background scraping thread
-	go startScraper(store, *scrapeInterval)
+	go startScraper(store, *scrapeInterval, inCluster)
 
 	// Register Prometheus custom collector
 	collector := exporter.NewProcessCollector(store)
 	prometheus.MustRegister(collector)
+
+	// When running inside Kubernetes, also export per-job pod resource requests.
+	if inCluster {
+		kubeStore := exporter.NewKubeStore()
+		client, err := exporter.NewKubeletClient(*kubeletInsecure)
+		if err != nil {
+			log.Printf("kube: disabled (kubelet client init failed: %v)", err)
+		} else {
+			go startKubeScraper(kubeStore, client, *scrapeInterval)
+			prometheus.MustRegister(exporter.NewKubeCollector(store, kubeStore))
+			log.Printf("kube: enabled, polling kubelet at %s", client.BaseURL())
+		}
+	}
 
 	// Configure HTTP Routes
 	http.HandleFunc("/", serveDashboard)
@@ -179,22 +196,40 @@ func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.His
 }
 
 // Background scraper with process object reuse for CPU calculation accuracy
-func startScraper(store *exporter.HistoryStore, interval time.Duration) {
-	// Keep track of active *process.Process objects to maintain CPU delta calculations
+func startScraper(store *exporter.HistoryStore, interval time.Duration, inCluster bool) {
 	procCache := make(map[int32]*process.Process)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Run initial scrape immediately
-	scrape(store, procCache)
+	scrape(store, procCache, inCluster)
 
 	for range ticker.C {
-		scrape(store, procCache)
+		scrape(store, procCache, inCluster)
 	}
 }
 
-func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process) {
+// startKubeScraper polls the kubelet for node-local pod resource requests.
+func startKubeScraper(kubeStore *exporter.KubeStore, client *exporter.KubeletClient, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	update := func() {
+		pods, err := client.Pods()
+		if err != nil {
+			log.Printf("kube: scrape error: %v", err)
+			return
+		}
+		kubeStore.Replace(pods)
+	}
+
+	update()
+	for range ticker.C {
+		update()
+	}
+}
+
+func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, inCluster bool) {
 	pids, err := process.Pids()
 	if err != nil {
 		log.Printf("Error getting PIDs: %v", err)
@@ -268,11 +303,20 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process) 
 			}
 		}
 
+		// Resolve the owning pod UID from cgroup (in-cluster only).
+		podUID := ""
+		if inCluster {
+			if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid)); err == nil {
+				podUID = exporter.PodUIDFromCgroup(string(data))
+			}
+		}
+
 		// Add sample to HistoryStore
 		store.AddSample(exporter.ProcessSample{
 			Timestamp:  now,
 			PID:        pid,
 			Name:       name,
+			PodUID:     podUID,
 			CmdLine:    cmdline,
 			Environ:    environMap,
 			CPUUsage:   cpuUsage,

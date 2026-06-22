@@ -149,7 +149,7 @@ func TestScrape(t *testing.T) {
 	store := exporter.NewHistoryStore()
 	cache := make(map[int32]*process.Process)
 
-	scrape(store, cache)
+	scrape(store, cache, false)
 
 	// In a normal test execution environment (Linux or macOS), there are always active processes
 	active := store.GetActiveProcesses()
@@ -167,7 +167,7 @@ func TestStartScraper(t *testing.T) {
 	store := exporter.NewHistoryStore()
 
 	// Run background scraper with short interval
-	go startScraper(store, 10*time.Millisecond)
+	go startScraper(store, 10*time.Millisecond, false)
 
 	// Wait briefly for at least a few scraper cycles
 	time.Sleep(30 * time.Millisecond)
