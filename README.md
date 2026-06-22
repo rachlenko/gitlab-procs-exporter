@@ -288,6 +288,15 @@ long high-entropy strings).
 gitlab-procs-exporter --config /etc/gitlab-procs-exporter/config.yaml
 ```
 
+When installing the systemd service, pass `--config` alongside
+`--deploy-as-systemd-service` and the path is baked into the unit's
+`ExecStart`:
+
+```bash
+sudo gitlab-procs-exporter --deploy-as-systemd-service \
+  --config /etc/gitlab-procs-exporter/config.yaml
+```
+
 ## Kubernetes job-resource metrics
 
 When the exporter runs **inside a Kubernetes cluster** (deployed as a

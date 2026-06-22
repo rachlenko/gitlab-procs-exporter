@@ -27,6 +27,7 @@ type ServiceConfig struct {
 	ServiceUser string        // User= the service runs as
 	Port        int           // --port passed to the exporter
 	Interval    time.Duration // --interval passed to the exporter
+	ConfigPath  string        // --config passed to the exporter (omitted when empty)
 }
 
 func (c *ServiceConfig) setDefaults() {
@@ -75,7 +76,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={{.ExecPath}} --port={{.Port}} --interval={{.Interval}}
+ExecStart={{.ExecPath}} --port={{.Port}} --interval={{.Interval}}{{if .ConfigPath}} --config "{{.ConfigPath}}"{{end}}
 User={{.ServiceUser}}
 Restart=on-failure
 RestartSec=5
@@ -110,12 +111,14 @@ func renderUnitFile(cfg ServiceConfig) (string, error) {
 		Port        int
 		Interval    string
 		ServiceUser string
+		ConfigPath  string
 	}{
 		Module:      Module,
 		ExecPath:    resolveExecPath(cfg.ExecPath),
 		Port:        cfg.Port,
 		Interval:    cfg.Interval.String(),
 		ServiceUser: cfg.ServiceUser,
+		ConfigPath:  cfg.ConfigPath,
 	}
 	if err := t.Execute(&b, data); err != nil {
 		return "", err
@@ -148,6 +151,9 @@ func InstallService(w io.Writer, cfg ServiceConfig) error {
 	}
 
 	logf("ExecStart -> %s", resolveExecPath(cfg.ExecPath))
+	if cfg.ConfigPath != "" {
+		logf("ConfigPath -> %s", cfg.ConfigPath)
+	}
 	if err := writeUnit(w, cfg); err != nil {
 		return err
 	}
