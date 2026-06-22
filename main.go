@@ -47,6 +47,8 @@ func main() {
 		"User the service runs as (root is required to read all processes' env/IO)")
 	kubeletInsecure := flag.Bool("kubelet-insecure", true,
 		"Skip TLS verification when querying the node-local kubelet (in-cluster only)")
+	configPath := flag.String("config", "",
+		"Path to a YAML config file with extra environ redaction rules")
 	flag.Parse()
 
 	if *showVersion {
@@ -103,8 +105,18 @@ func main() {
 	// Start background scraping thread
 	go startScraper(store, *scrapeInterval, inCluster)
 
+	// Load optional config for extra environ redaction rules (fail-fast).
+	var redactKeySubstrings []string
+	if *configPath != "" {
+		cfg, err := exporter.LoadConfig(*configPath)
+		if err != nil {
+			log.Fatalf("config: %v", err)
+		}
+		redactKeySubstrings = cfg.RedactKeySubstrings
+	}
+
 	// Register Prometheus custom collector
-	collector := exporter.NewProcessCollector(store)
+	collector := exporter.NewProcessCollector(store, redactKeySubstrings...)
 	prometheus.MustRegister(collector)
 
 	// When running inside Kubernetes, also export per-job pod resource requests.

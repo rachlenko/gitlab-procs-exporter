@@ -1,0 +1,9 @@
+# gitlab-procs-exporter configuration.
+#
+# Additional environ key-name substrings to redact in the gitlab_process_info
+# metric. Case-insensitive, matched by substring ("contains"), and added on top
+# of the built-in denylist. Values whose content looks like a secret are always
+# redacted regardless of this list.
+redact_key_substrings:
+  - vault
+  - internal_token
