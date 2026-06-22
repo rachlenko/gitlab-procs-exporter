@@ -264,6 +264,30 @@ receivers:
     send_resolved: true
 ```
 
+## Configuration file
+
+Pass `--config <path>` to supply a YAML file with extra environ redaction
+rules. Without the flag, only the built-in secret denylist applies. If the
+flag is given but the file is missing or malformed, the exporter logs the
+error and exits (fail-fast).
+
+```yaml
+# config.example.yaml
+redact_key_substrings:
+  - vault
+  - internal_token
+```
+
+`redact_key_substrings` is a list of case-insensitive substrings. Any process
+environment variable whose **name** contains one of them is shown as
+`NAME=[REDACTED]` in the `gitlab_process_info` metric, in addition to the
+built-in denylist and the value-shape heuristics (token prefixes, JWTs, and
+long high-entropy strings).
+
+```bash
+gitlab-procs-exporter --config /etc/gitlab-procs-exporter/config.yaml
+```
+
 ## Kubernetes job-resource metrics
 
 When the exporter runs **inside a Kubernetes cluster** (deployed as a
