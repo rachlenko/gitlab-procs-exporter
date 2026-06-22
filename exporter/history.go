@@ -12,6 +12,7 @@ type ProcessSample struct {
 	Timestamp  time.Time         `json:"timestamp"`
 	PID        int32             `json:"pid"`
 	Name       string            `json:"name"`
+	PodUID     string            `json:"pod_uid,omitempty"` // Kubernetes pod UID (empty outside a cluster)
 	CmdLine    string            `json:"cmdline"`
 	Environ    map[string]string `json:"environ"`
 	CPUUsage   float64           `json:"cpu_usage"`      // CPU percentage usage

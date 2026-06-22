@@ -235,3 +235,21 @@ func TestConcurrentSafety(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestProcessSamplePodUID(t *testing.T) {
+	hs := NewHistoryStore()
+	hs.AddSample(ProcessSample{
+		Timestamp: time.Now(),
+		PID:       4242,
+		Name:      "ruby",
+		PodUID:    "abc-123",
+		IsActive:  true,
+	})
+	active := hs.GetActiveProcesses()
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active process, got %d", len(active))
+	}
+	if active[0].PodUID != "abc-123" {
+		t.Errorf("expected PodUID %q, got %q", "abc-123", active[0].PodUID)
+	}
+}
