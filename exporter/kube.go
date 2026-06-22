@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -204,4 +205,34 @@ func (c *KubeletClient) Pods() ([]KubePodInfo, error) {
 		return nil, err
 	}
 	return parsePodList(data)
+}
+
+// KubeStore holds the latest snapshot of pod UID -> resource requests.
+type KubeStore struct {
+	mu   sync.RWMutex
+	pods map[string]KubePodInfo
+}
+
+// NewKubeStore creates an empty KubeStore.
+func NewKubeStore() *KubeStore {
+	return &KubeStore{pods: make(map[string]KubePodInfo)}
+}
+
+// Replace atomically swaps the whole snapshot.
+func (ks *KubeStore) Replace(pods []KubePodInfo) {
+	next := make(map[string]KubePodInfo, len(pods))
+	for _, p := range pods {
+		next[p.UID] = p
+	}
+	ks.mu.Lock()
+	ks.pods = next
+	ks.mu.Unlock()
+}
+
+// Get returns the pod info for a UID.
+func (ks *KubeStore) Get(uid string) (KubePodInfo, bool) {
+	ks.mu.RLock()
+	defer ks.mu.RUnlock()
+	p, ok := ks.pods[uid]
+	return p, ok
 }

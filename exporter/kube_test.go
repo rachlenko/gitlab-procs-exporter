@@ -142,3 +142,20 @@ func TestKubeletClientPods(t *testing.T) {
 		t.Fatalf("expected 2 pods, got %d", len(pods))
 	}
 }
+
+func TestKubeStoreReplaceGet(t *testing.T) {
+	ks := NewKubeStore()
+	if _, ok := ks.Get("pod-aaa"); ok {
+		t.Error("expected miss on empty store")
+	}
+	ks.Replace([]KubePodInfo{{UID: "pod-aaa", CPURequest: 0.5, MemRequest: 1024}})
+	got, ok := ks.Get("pod-aaa")
+	if !ok || got.CPURequest != 0.5 || got.MemRequest != 1024 {
+		t.Errorf("unexpected Get result: %+v ok=%v", got, ok)
+	}
+	// Replace fully swaps the snapshot.
+	ks.Replace([]KubePodInfo{{UID: "pod-bbb", CPURequest: 1}})
+	if _, ok := ks.Get("pod-aaa"); ok {
+		t.Error("expected pod-aaa gone after Replace")
+	}
+}
