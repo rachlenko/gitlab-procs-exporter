@@ -143,7 +143,7 @@ func TestRenderUnitFileWithConfigPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderUnitFile: %v", err)
 	}
-	want := "ExecStart=/usr/bin/gitlab-procs-exporter --port=9100 --interval=1m30s --config /etc/gitlab-procs-exporter/config.yaml"
+	want := `ExecStart=/usr/bin/gitlab-procs-exporter --port=9100 --interval=1m30s --config "/etc/gitlab-procs-exporter/config.yaml"`
 	if !strings.Contains(out, want) {
 		t.Errorf("unit file missing %q\n---\n%s", want, out)
 	}

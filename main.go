@@ -48,7 +48,7 @@ func main() {
 	kubeletInsecure := flag.Bool("kubelet-insecure", true,
 		"Skip TLS verification when querying the node-local kubelet (in-cluster only)")
 	configPath := flag.String("config", "",
-		"Path to a YAML config file with extra environ redaction rules")
+		"Path to a YAML config file with extra environ redaction rules (also baked into the systemd unit when used with --deploy-as-systemd-service)")
 	flag.Parse()
 
 	if *showVersion {

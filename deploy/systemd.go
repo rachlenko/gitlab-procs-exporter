@@ -76,7 +76,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={{.ExecPath}} --port={{.Port}} --interval={{.Interval}}{{if .ConfigPath}} --config {{.ConfigPath}}{{end}}
+ExecStart={{.ExecPath}} --port={{.Port}} --interval={{.Interval}}{{if .ConfigPath}} --config "{{.ConfigPath}}"{{end}}
 User={{.ServiceUser}}
 Restart=on-failure
 RestartSec=5
@@ -151,6 +151,9 @@ func InstallService(w io.Writer, cfg ServiceConfig) error {
 	}
 
 	logf("ExecStart -> %s", resolveExecPath(cfg.ExecPath))
+	if cfg.ConfigPath != "" {
+		logf("ConfigPath -> %s", cfg.ConfigPath)
+	}
 	if err := writeUnit(w, cfg); err != nil {
 		return err
 	}
