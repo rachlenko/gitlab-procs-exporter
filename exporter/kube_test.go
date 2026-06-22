@@ -34,3 +34,20 @@ func TestParseMemoryQuantity(t *testing.T) {
 		}
 	}
 }
+
+func TestPodUIDFromCgroup(t *testing.T) {
+	cgroupfs := "12:cpuset:/kubepods/besteffort/pod1234abcd-12ab-34cd-56ef-1234567890ab/abc123def456\n"
+	systemd := "0::/kubepods.slice/kubepods-burstable.slice/" +
+		"kubepods-burstable-pod1234abcd_12ab_34cd_56ef_1234567890ab.slice/cri-containerd-xyz.scope\n"
+	want := "1234abcd-12ab-34cd-56ef-1234567890ab"
+
+	if got := PodUIDFromCgroup(cgroupfs); got != want {
+		t.Errorf("cgroupfs: got %q, want %q", got, want)
+	}
+	if got := PodUIDFromCgroup(systemd); got != want {
+		t.Errorf("systemd: got %q, want %q", got, want)
+	}
+	if got := PodUIDFromCgroup("0::/system.slice/sshd.service\n"); got != "" {
+		t.Errorf("non-k8s: got %q, want empty", got)
+	}
+}

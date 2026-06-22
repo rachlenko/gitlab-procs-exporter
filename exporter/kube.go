@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -57,4 +58,19 @@ func ParseMemoryQuantity(s string) (float64, error) {
 		return 0, fmt.Errorf("memory quantity %q: %w", s, err)
 	}
 	return v, nil
+}
+
+// podUIDRe matches the pod UID embedded in a cgroup path, in either cgroupfs
+// ("pod<uuid>") or systemd ("pod<uuid>.slice") form. UID separators may be
+// dashes or underscores.
+var podUIDRe = regexp.MustCompile(`pod([0-9a-fA-F]{8}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{12})`)
+
+// PodUIDFromCgroup extracts the Kubernetes pod UID from /proc/<pid>/cgroup
+// content, returning the canonical dashed UUID, or "" if none is present.
+func PodUIDFromCgroup(content string) string {
+	m := podUIDRe.FindStringSubmatch(content)
+	if m == nil {
+		return ""
+	}
+	return strings.ReplaceAll(m[1], "_", "-")
 }
