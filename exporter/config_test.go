@@ -28,6 +28,22 @@ func TestLoadConfigValid(t *testing.T) {
 	}
 }
 
+func TestNormalizeSubstrings(t *testing.T) {
+	got := normalizeSubstrings([]string{"  Vault  ", "TOKEN", "", "  ", "Api_Key"})
+	want := []string{"vault", "token", "api_key"} // trimmed, lowercased, blanks dropped, order preserved
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+	if n := normalizeSubstrings(nil); len(n) != 0 {
+		t.Errorf("nil input: expected empty slice, got %v", n)
+	}
+}
+
 func TestLoadConfigMissingFile(t *testing.T) {
 	if _, err := LoadConfig(filepath.Join(t.TempDir(), "nope.yaml")); err == nil {
 		t.Error("expected error for missing file")

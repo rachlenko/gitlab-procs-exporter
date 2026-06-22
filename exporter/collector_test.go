@@ -214,3 +214,13 @@ func TestScrubEnvironBuiltinStillWorks(t *testing.T) {
 		t.Errorf("expected USER to pass through, got %q", out)
 	}
 }
+
+func TestScrubEnvironDeterministicOrder(t *testing.T) {
+	pc := NewProcessCollector(NewHistoryStore())
+	// Keys chosen so none trips the built-in denylist or value heuristics.
+	out := pc.scrubEnviron(map[string]string{"ZED": "1", "ALPHA": "2", "MIKE": "3"})
+	want := "ALPHA=2, MIKE=3, ZED=1" // keys sorted lexicographically for a stable label
+	if out != want {
+		t.Errorf("expected sorted order %q, got %q", want, out)
+	}
+}

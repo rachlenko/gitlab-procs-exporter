@@ -3,6 +3,7 @@ package exporter
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -81,10 +82,18 @@ func (pc *ProcessCollector) keyInExtra(key string) bool {
 // denylist (IsSecretKey), operator-configured substrings (keyInExtra), or
 // the value-shape heuristics (IsSecretValue).
 func (pc *ProcessCollector) scrubEnviron(environ map[string]string) string {
-	var envPairs []string
-	for k, v := range environ {
-		val := v
-		if IsSecretKey(k) || pc.keyInExtra(k) || IsSecretValue(v) {
+	// Sort keys so the gitlab_process_info "environ" label is stable across
+	// scrapes (map iteration order is otherwise non-deterministic).
+	keys := make([]string, 0, len(environ))
+	for k := range environ {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	envPairs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		val := environ[k]
+		if IsSecretKey(k) || pc.keyInExtra(k) || IsSecretValue(val) {
 			val = "[REDACTED]"
 		}
 		envPairs = append(envPairs, fmt.Sprintf("%s=%s", k, val))
