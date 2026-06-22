@@ -130,3 +130,37 @@ func TestRemoveIfPresent(t *testing.T) {
 		t.Errorf("expected 'not present' message, got %q", buf.String())
 	}
 }
+
+func TestRenderUnitFileWithConfigPath(t *testing.T) {
+	c := ServiceConfig{
+		ExecPath:    "/usr/bin/gitlab-procs-exporter",
+		Port:        9100,
+		Interval:    90 * time.Second,
+		ServiceUser: "root",
+		ConfigPath:  "/etc/gitlab-procs-exporter/config.yaml",
+	}
+	out, err := renderUnitFile(c)
+	if err != nil {
+		t.Fatalf("renderUnitFile: %v", err)
+	}
+	want := "ExecStart=/usr/bin/gitlab-procs-exporter --port=9100 --interval=1m30s --config /etc/gitlab-procs-exporter/config.yaml"
+	if !strings.Contains(out, want) {
+		t.Errorf("unit file missing %q\n---\n%s", want, out)
+	}
+}
+
+func TestRenderUnitFileWithoutConfigPathOmitsFlag(t *testing.T) {
+	c := ServiceConfig{
+		ExecPath:    "/usr/bin/gitlab-procs-exporter",
+		Port:        9100,
+		Interval:    90 * time.Second,
+		ServiceUser: "root",
+	}
+	out, err := renderUnitFile(c)
+	if err != nil {
+		t.Fatalf("renderUnitFile: %v", err)
+	}
+	if strings.Contains(out, "--config") {
+		t.Errorf("unit file should not contain --config when ConfigPath is empty\n---\n%s", out)
+	}
+}

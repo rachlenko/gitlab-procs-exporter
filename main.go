@@ -71,6 +71,7 @@ func main() {
 			ServiceUser: *serviceUser,
 			Port:        *port,
 			Interval:    *scrapeInterval,
+			ConfigPath:  *configPath,
 		})
 		if err != nil {
 			log.Fatalf("deploy failed: %v", err)
