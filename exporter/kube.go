@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -84,7 +85,7 @@ func PodUIDFromCgroup(content string) string {
 
 // saTokenPath is the in-cluster service account token path; var (not const)
 // so tests can override it.
-var saTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+var saTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec // G101: filesystem path to the SA token, not a hardcoded credential
 
 // InCluster reports whether the process is running inside a Kubernetes cluster.
 func InCluster() bool {
@@ -187,7 +188,9 @@ func (c *KubeletClient) BaseURL() string { return c.baseURL }
 
 // Pods fetches and parses the node's pod list from the kubelet.
 func (c *KubeletClient) Pods() ([]KubePodInfo, error) {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/pods", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/pods", nil)
 	if err != nil {
 		return nil, err
 	}
