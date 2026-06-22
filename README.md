@@ -263,3 +263,58 @@ receivers:
   - service_key: 'YOUR_PAGERDUTY_API_SERVICE_KEY'
     send_resolved: true
 ```
+
+## Kubernetes job-resource metrics
+
+When the exporter runs **inside a Kubernetes cluster** (deployed as a
+DaemonSet), it additionally exports the resource requests of GitLab CI job
+pods scheduled on the same node:
+
+| Metric | Type | Unit | Labels |
+|--------|------|------|--------|
+| `kuber_cpu_request` | gauge | cores | `job_name` |
+| `kuber_memory_request` | gauge | bytes | `job_name` |
+
+`job_name` is taken from the `CI_JOB_NAME` environment variable of the job's
+process. The exporter links a process to its pod via the pod UID in
+`/proc/<pid>/cgroup`, and reads the pod's resource requests from the node-local
+kubelet API (`https://$HOST_IP:10250/pods`). Outside a cluster these metrics are
+simply absent and the exporter behaves exactly as before.
+
+### Requirements
+
+- **DaemonSet env** — expose the node IP via the Downward API:
+
+  ```yaml
+  env:
+    - name: HOST_IP
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+  ```
+
+- **RBAC** — the ServiceAccount needs read access to the kubelet:
+
+  ```yaml
+  rules:
+    - apiGroups: [""]
+      resources: ["nodes/proxy"]
+      verbs: ["get"]
+  ```
+
+- **TLS** — the node-local kubelet uses a self-signed serving certificate, so
+  TLS verification is skipped by default. Set `--kubelet-insecure=false` only if
+  your kubelet presents a CA-trusted certificate.
+
+### Security / SSRF caveat
+
+The exporter connects to the kubelet address derived from `HOST_IP` (or
+`NODE_NAME`). Run it only with a trusted Downward-API-provided node address.
+
+### Hardened environ scrubbing
+
+The `gitlab_process_info` metric exposes process environment variables. Values
+are redacted when the **key** looks sensitive (expanded denylist: tokens, certs,
+SSH/GPG, JWT, sessions, cookies, DSNs, …) **or** when the **value** looks like a
+secret (known token prefixes such as `glpat-`/`ghp_`/`AKIA`, JWTs, and long
+high-entropy strings) — even if the key name is innocuous.
