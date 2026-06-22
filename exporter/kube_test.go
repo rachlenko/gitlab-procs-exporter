@@ -1,6 +1,8 @@
 package exporter
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -80,5 +82,63 @@ func TestInCluster(t *testing.T) {
 	saTokenPath = filepath.Join(dir, "missing")
 	if InCluster() {
 		t.Error("expected InCluster() false when token missing")
+	}
+}
+
+const samplePodList = `{
+  "items": [
+    {"metadata": {"uid": "pod-aaa"},
+     "spec": {"containers": [
+       {"resources": {"requests": {"cpu": "500m", "memory": "512Mi"}}},
+       {"resources": {"requests": {"cpu": "250m", "memory": "256Mi"}}}
+     ]}},
+    {"metadata": {"uid": "pod-bbb"},
+     "spec": {"containers": [
+       {"resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}
+     ]}}
+  ]
+}`
+
+func TestParsePodList(t *testing.T) {
+	pods, err := parsePodList([]byte(samplePodList))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]KubePodInfo{}
+	for _, p := range pods {
+		got[p.UID] = p
+	}
+	if got["pod-aaa"].CPURequest != 0.75 {
+		t.Errorf("pod-aaa CPU = %v, want 0.75", got["pod-aaa"].CPURequest)
+	}
+	if got["pod-aaa"].MemRequest != 805306368 { // 512Mi + 256Mi
+		t.Errorf("pod-aaa Mem = %v, want 805306368", got["pod-aaa"].MemRequest)
+	}
+	if got["pod-bbb"].CPURequest != 1 {
+		t.Errorf("pod-bbb CPU = %v, want 1", got["pod-bbb"].CPURequest)
+	}
+}
+
+func TestKubeletClientPods(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/pods" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(samplePodList))
+	}))
+	defer ts.Close()
+
+	c := &KubeletClient{baseURL: ts.URL, token: "tok", http: ts.Client()}
+	pods, err := c.Pods()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pods) != 2 {
+		t.Fatalf("expected 2 pods, got %d", len(pods))
 	}
 }

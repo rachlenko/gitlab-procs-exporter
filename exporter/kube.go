@@ -1,11 +1,16 @@
 package exporter
 
 import (
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ParseCPUQuantity parses a Kubernetes CPU quantity into cores.
@@ -89,4 +94,114 @@ func InCluster() bool {
 		return false
 	}
 	return true
+}
+
+// KubePodInfo holds the summed resource requests for one pod.
+type KubePodInfo struct {
+	UID        string
+	CPURequest float64 // cores
+	MemRequest float64 // bytes
+}
+
+type podList struct {
+	Items []struct {
+		Metadata struct {
+			UID string `json:"uid"`
+		} `json:"metadata"`
+		Spec struct {
+			Containers []struct {
+				Resources struct {
+					Requests struct {
+						CPU    string `json:"cpu"`
+						Memory string `json:"memory"`
+					} `json:"requests"`
+				} `json:"resources"`
+			} `json:"containers"`
+		} `json:"spec"`
+	} `json:"items"`
+}
+
+// parsePodList parses a kubelet /pods response into per-pod summed requests.
+func parsePodList(data []byte) ([]KubePodInfo, error) {
+	var pl podList
+	if err := json.Unmarshal(data, &pl); err != nil {
+		return nil, fmt.Errorf("parse pod list: %w", err)
+	}
+	out := make([]KubePodInfo, 0, len(pl.Items))
+	for _, item := range pl.Items {
+		info := KubePodInfo{UID: item.Metadata.UID}
+		for _, ctr := range item.Spec.Containers {
+			cpu, err := ParseCPUQuantity(ctr.Resources.Requests.CPU)
+			if err != nil {
+				return nil, err
+			}
+			mem, err := ParseMemoryQuantity(ctr.Resources.Requests.Memory)
+			if err != nil {
+				return nil, err
+			}
+			info.CPURequest += cpu
+			info.MemRequest += mem
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
+// KubeletClient queries the node-local kubelet read-only API.
+type KubeletClient struct {
+	baseURL string
+	token   string
+	http    *http.Client
+}
+
+// kubeletAddr resolves the kubelet host: HOST_IP, then NODE_NAME, then loopback.
+func kubeletAddr() string {
+	if v := os.Getenv("HOST_IP"); v != "" {
+		return v
+	}
+	if v := os.Getenv("NODE_NAME"); v != "" {
+		return v
+	}
+	return "127.0.0.1"
+}
+
+// NewKubeletClient builds a client using the in-cluster SA token.
+func NewKubeletClient(insecure bool) (*KubeletClient, error) {
+	tok, err := os.ReadFile(saTokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("read SA token: %w", err)
+	}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure}, //nolint:gosec // node-local kubelet cert
+	}
+	return &KubeletClient{
+		baseURL: fmt.Sprintf("https://%s:10250", kubeletAddr()),
+		token:   strings.TrimSpace(string(tok)),
+		http:    &http.Client{Timeout: 5 * time.Second, Transport: tr},
+	}, nil
+}
+
+// BaseURL returns the kubelet base URL (for logging).
+func (c *KubeletClient) BaseURL() string { return c.baseURL }
+
+// Pods fetches and parses the node's pod list from the kubelet.
+func (c *KubeletClient) Pods() ([]KubePodInfo, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/pods", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("kubelet /pods: status %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return parsePodList(data)
 }
