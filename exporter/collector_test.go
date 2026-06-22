@@ -125,3 +125,46 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSecretKeyExpanded(t *testing.T) {
+	secrets := []string{
+		"TLS_CERT", "SSH_KEY", "GPG_PASSPHRASE", "MY_JWT", "BEARER_HEADER",
+		"ACCESS_GRANT", "SESSION_ID", "CSRF_COOKIE", "PASSWORD_SALT",
+		"OTP_SEED", "WEBHOOK_URL", "DB_DSN", "PG_CONNECTION", "USER_PASSWD",
+	}
+	for _, s := range secrets {
+		if !IsSecretKey(s) {
+			t.Errorf("expected key %q to be marked as secret", s)
+		}
+	}
+
+	// Keys containing "sas" that are NOT secrets — removed from denylist to
+	// avoid over-redacting benign env vars like DATABASES_COUNT or ALIASES.
+	benign := []string{"DATABASES_COUNT", "RELEASES_DIR", "INVASAS", "SASQUATCH_HOME"}
+	for _, k := range benign {
+		if IsSecretKey(k) {
+			t.Errorf("expected key %q to NOT be marked as secret (over-redaction)", k)
+		}
+	}
+}
+
+func TestIsSecretValue(t *testing.T) {
+	secretVals := []string{
+		"glpat-abcdefghij1234567890",
+		"ghp_0123456789abcdef0123456789abcdef0123",
+		"AKIAIOSFODNN7EXAMPLE",
+		"eyJhbGciOi.eyJzdWIiOiIxMjM0.SflKxwRJSM",
+		"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0", // 40-char hex
+	}
+	for _, v := range secretVals {
+		if !IsSecretValue(v) {
+			t.Errorf("expected value %q to be redacted", v)
+		}
+	}
+	plainVals := []string{"build", "main", "/usr/local/bin:/usr/bin", "true", "1", "ruby:3.2"}
+	for _, v := range plainVals {
+		if IsSecretValue(v) {
+			t.Errorf("expected value %q to pass through", v)
+		}
+	}
+}
