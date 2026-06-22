@@ -1,6 +1,10 @@
 package exporter
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseCPUQuantity(t *testing.T) {
 	cases := map[string]float64{
@@ -49,5 +53,32 @@ func TestPodUIDFromCgroup(t *testing.T) {
 	}
 	if got := PodUIDFromCgroup("0::/system.slice/sshd.service\n"); got != "" {
 		t.Errorf("non-k8s: got %q, want empty", got)
+	}
+}
+
+func TestInCluster(t *testing.T) {
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenFile, []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := saTokenPath
+	saTokenPath = tokenFile
+	defer func() { saTokenPath = orig }()
+
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+	if !InCluster() {
+		t.Error("expected InCluster() true when env + token present")
+	}
+
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	if InCluster() {
+		t.Error("expected InCluster() false when env unset")
+	}
+
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+	saTokenPath = filepath.Join(dir, "missing")
+	if InCluster() {
+		t.Error("expected InCluster() false when token missing")
 	}
 }

@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -73,4 +74,19 @@ func PodUIDFromCgroup(content string) string {
 		return ""
 	}
 	return strings.ReplaceAll(m[1], "_", "-")
+}
+
+// saTokenPath is the in-cluster service account token path; var (not const)
+// so tests can override it.
+var saTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+// InCluster reports whether the process is running inside a Kubernetes cluster.
+func InCluster() bool {
+	if os.Getenv("KUBERNETES_SERVICE_HOST") == "" {
+		return false
+	}
+	if _, err := os.Stat(saTokenPath); err != nil {
+		return false
+	}
+	return true
 }
