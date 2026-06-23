@@ -465,10 +465,8 @@ spec:
       hostPID: true                      # see every process on the node, not just our own
       containers:
         - name: exporter
-          # No official container image is published — the releases ship .deb /
-          # .rpm / tarballs. Build your own, e.g. a Debian base + the release
-          # .deb, or COPY the linux binary from the release tarball.
-          image: your-registry/gitlab-procs-exporter:v0.0.13
+          # Multi-arch image published to ghcr.io on each release (amd64 + arm64).
+          image: ghcr.io/rachlenko/gitlab-procs-exporter:v0.0.14
           args: ["--port=8000", "--interval=10s"]
           securityContext:
             runAsUser: 0                 # root — required to read other processes' environ/cgroup
