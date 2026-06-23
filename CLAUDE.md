@@ -17,6 +17,10 @@ Prometheus process exporter with an active 10-minute sliding cache in-memory buf
 * `cmd/jobreport/` — Thin wrapper binary; `main` delegates to `internal/jobreport.Main`.
 * `cmd/jobreport-web/` — Self-contained htmx web UI for jobreport. Single binary that embeds templates + htmx via `go:embed` and self-execs: when `os.Args[1] == "report"` it behaves as the jobreport CLI, otherwise it serves HTTP. The server re-execs itself (resolved via `os.Executable()`) with a leading `report` arg to produce reports — never via a shell string; pass `exec.Command` separate, validated args (digits-only job id). Treat as an internal tool: no auth, the backend connects to the user-supplied Prometheus URL (SSRF caveat in its README).
 
+## Commit & PR Conventions
+* Generate commit messages with the local `git-camus` utility using its `claude-cli` provider (git-camus >= 0.5.0): `git-camus -p claude-cli -m "<summary>" -s` to preview, then `git-camus -p claude-cli -m "<summary>"` to commit. It calls the local `claude -p` CLI via the CLI's own login (strips `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`) — no API key.
+* Never add Claude/Anthropic attribution: no `Co-Authored-By: Claude …` trailer in commits, no "🤖 Generated with Claude Code" footer in PR bodies, and no "by Claude"-style mentions in code or doc comments.
+
 ## Code Style & Implementation Standards
 * Keep one `*_test.go` file associated directly per implementation file.
 * Use `sync.RWMutex` to isolate write threads in `HistoryStore` from foreground scrapes.
