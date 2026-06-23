@@ -53,3 +53,45 @@ nfpms:
     formats:
       - deb
       - rpm
+
+dockers:
+  - id: amd64
+    goos: linux
+    goarch: amd64
+    ids:
+      - gitlab-procs-exporter
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "ghcr.io/rachlenko/gitlab-procs-exporter:{{ .Tag }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.source=https://github.com/rachlenko/gitlab-procs-exporter"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+  - id: arm64
+    goos: linux
+    goarch: arm64
+    ids:
+      - gitlab-procs-exporter
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "ghcr.io/rachlenko/gitlab-procs-exporter:{{ .Tag }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.source=https://github.com/rachlenko/gitlab-procs-exporter"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+docker_manifests:
+  - name_template: "ghcr.io/rachlenko/gitlab-procs-exporter:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/rachlenko/gitlab-procs-exporter:{{ .Tag }}-amd64"
+      - "ghcr.io/rachlenko/gitlab-procs-exporter:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/rachlenko/gitlab-procs-exporter:latest"
+    image_templates:
+      - "ghcr.io/rachlenko/gitlab-procs-exporter:{{ .Tag }}-amd64"
+      - "ghcr.io/rachlenko/gitlab-procs-exporter:{{ .Tag }}-arm64"
