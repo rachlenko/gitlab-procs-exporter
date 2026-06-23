@@ -123,6 +123,76 @@ flags (`-addr`, `-store`, `-debug`) and the internal-tool/SSRF caveat.
 
 ---
 
+## Metrics reference
+
+Everything below is served on `GET /metrics` (default port `8000`) in the
+Prometheus text exposition format.
+
+### Per-process metrics (always exported)
+
+One series **per active process**, refreshed every `--interval`. All carry the
+labels `pid` (process id) and `name` (process comm).
+
+| Metric | Type | Unit | Meaning |
+|--------|------|------|---------|
+| `gitlab_process_cpu_seconds_total` | counter¹ | percent¹ | Per-process CPU usage as sampled by gopsutil. |
+| `gitlab_process_resident_memory_bytes` | gauge | bytes | Resident set size (RSS). |
+| `gitlab_process_virtual_memory_bytes` | gauge | bytes | Virtual memory size (VMS). |
+| `gitlab_process_io_read_bytes_total` | counter | bytes | Cumulative bytes read from disk. |
+| `gitlab_process_io_write_bytes_total` | counter | bytes | Cumulative bytes written to disk. |
+| `gitlab_process_info` | gauge | `1` | Metadata-only series; the value is always `1` and the data lives in its labels. |
+
+`gitlab_process_info` carries two extra labels beyond `pid`/`name`:
+
+- `cmdline` — the full process command line.
+- `environ` — the process environment as a single `KEY=VALUE, KEY2=VALUE2`
+  string, **sorted by key** (stable across scrapes). Secret-looking entries are
+  rendered as `KEY=[REDACTED]` (see [Hardened environ scrubbing](#hardened-environ-scrubbing)).
+
+¹ **Caveat on `gitlab_process_cpu_seconds_total`:** despite the `_total` /
+`seconds` name and the counter type, the exported value is the **instantaneous
+CPU usage percent** returned by `gopsutil` (`Process.Percent`), not a
+monotonically increasing seconds counter. Treat it as a percent gauge — do
+**not** apply `rate()` to it. The two `_io_*_total` counters, by contrast, are
+genuine cumulative counters and `rate()` works on them.
+
+Example exposition:
+
+```
+# HELP gitlab_process_resident_memory_bytes Resident set size (RSS) in bytes.
+# TYPE gitlab_process_resident_memory_bytes gauge
+gitlab_process_resident_memory_bytes{pid="4567",name="sidekiq"} 2.097152e+08
+# HELP gitlab_process_info Metadata about the process ... (scrubbed for secrets).
+# TYPE gitlab_process_info gauge
+gitlab_process_info{pid="4567",name="sidekiq",cmdline="sidekiq -c 10",environ="CI_JOB_NAME=build, DB_PASSWORD=[REDACTED], HOME=/root"} 1
+```
+
+### Kubernetes job-resource metrics (only in-cluster)
+
+Exported **only** when the exporter runs inside a Kubernetes cluster (see
+[Kubernetes job-resource metrics](#kubernetes-job-resource-metrics) for the
+preconditions). One series **per unique `job_name`** seen on the node.
+
+| Metric | Type | Unit | Label | Meaning |
+|--------|------|------|-------|---------|
+| `kuber_cpu_request` | gauge | cores | `job_name` | Sum of the job pod's container CPU **requests** (e.g. `500m` → `0.5`). |
+| `kuber_memory_request` | gauge | bytes | `job_name` | Sum of the job pod's container memory **requests** (e.g. `512Mi` → `5.36870912e+08`). |
+
+`job_name` is the value of the `CI_JOB_NAME` environment variable of the job's
+process — **not** the Prometheus `job` label (which Prometheus injects from your
+scrape config). Filter with `job_name="build"`, never `job="build"`.
+
+```
+# HELP kuber_cpu_request CPU request of the GitLab CI job pod, in cores.
+# TYPE kuber_cpu_request gauge
+kuber_cpu_request{job_name="build"} 0.5
+# HELP kuber_memory_request Memory request of the GitLab CI job pod, in bytes.
+# TYPE kuber_memory_request gauge
+kuber_memory_request{job_name="build"} 5.36870912e+08
+```
+
+---
+
 ## 2. Prometheus Configuration (`prometheus.yml`)
 
 Add the exporter as a static target in your Prometheus configuration. Align the scraping interval (`scrape_interval`) with your exporter's internal collection frequency.
@@ -314,30 +384,121 @@ process. The exporter links a process to its pod via the pod UID in
 kubelet API (`https://$HOST_IP:10250/pods`). Outside a cluster these metrics are
 simply absent and the exporter behaves exactly as before.
 
-### Requirements
+### How `HOST_IP` and the `nodes/proxy` RBAC fit together
 
-- **DaemonSet env** — expose the node IP via the Downward API:
+The in-cluster flow is:
 
-  ```yaml
-  env:
-    - name: HOST_IP
-      valueFrom:
-        fieldRef:
-          fieldPath: status.hostIP
-  ```
+1. The exporter detects it is in a cluster (`KUBERNETES_SERVICE_HOST` is set and
+   the ServiceAccount token file exists).
+2. It enumerates the node's processes from `/proc` and reads `CI_JOB_NAME` and
+   the owning pod UID (from `/proc/<pid>/cgroup`) for each.
+3. It calls the **node-local kubelet** read-only API at
+   `https://$HOST_IP:10250/pods` — using `HOST_IP` to address *this* node's
+   kubelet — to read each pod's resource requests, presenting the
+   ServiceAccount token as a `Bearer` credential.
+4. The kubelet authorizes that token (Webhook auth, the kubeadm default) by
+   asking the API server whether the SA may `get` the `nodes/proxy` resource.
+   Without that permission the kubelet returns `401/403` and no kube metrics
+   appear.
 
-- **RBAC** — the ServiceAccount needs read access to the kubelet:
+So **`HOST_IP` decides *which* kubelet to talk to**, and **`nodes/proxy` decides
+*whether the kubelet answers***. Both are required.
 
-  ```yaml
-  rules:
-    - apiGroups: [""]
-      resources: ["nodes/proxy"]
-      verbs: ["get"]
-  ```
+### Complete DaemonSet manifest
 
-- **TLS** — the node-local kubelet uses a self-signed serving certificate, so
-  TLS verification is skipped by default. Set `--kubelet-insecure=false` only if
-  your kubelet presents a CA-trusted certificate.
+This is the minimum that makes `kuber_cpu_request` / `kuber_memory_request`
+appear. Note `hostPID: true` and running as root — without them the container
+only sees its own PID namespace and cannot read other pods' `/proc/<pid>/environ`
+or cgroup, so `job_name` and the pod link would be empty.
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitlab-procs-exporter
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitlab-procs-exporter-kubelet
+rules:
+  # Lets the kubelet authorize the SA token for GET https://<node>:10250/pods.
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitlab-procs-exporter-kubelet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gitlab-procs-exporter-kubelet
+subjects:
+  - kind: ServiceAccount
+    name: gitlab-procs-exporter
+    namespace: monitoring
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gitlab-procs-exporter
+  namespace: monitoring
+  labels:
+    app: gitlab-procs-exporter
+spec:
+  selector:
+    matchLabels:
+      app: gitlab-procs-exporter
+  template:
+    metadata:
+      labels:
+        app: gitlab-procs-exporter
+      annotations:                       # optional: scrape via prometheus.io/* relabeling
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: gitlab-procs-exporter
+      hostPID: true                      # see every process on the node, not just our own
+      containers:
+        - name: exporter
+          # No official container image is published — the releases ship .deb /
+          # .rpm / tarballs. Build your own, e.g. a Debian base + the release
+          # .deb, or COPY the linux binary from the release tarball.
+          image: your-registry/gitlab-procs-exporter:v0.0.13
+          args: ["--port=8000", "--interval=10s"]
+          securityContext:
+            runAsUser: 0                 # root — required to read other processes' environ/cgroup
+            # privileged: true           # use instead of runAsUser if your PSP/PSA needs it
+          ports:
+            - name: metrics
+              containerPort: 8000
+          env:
+            - name: HOST_IP              # which kubelet to query: this node's IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            # - name: NODE_NAME          # optional fallback if HOST_IP is unset
+            #   valueFrom:
+            #     fieldRef:
+            #       fieldPath: spec.nodeName
+```
+
+Apply with `kubectl apply -f daemonset.yaml`, then verify on one pod:
+
+```bash
+kubectl -n monitoring exec ds/gitlab-procs-exporter -- \
+  sh -c 'wget -qO- localhost:8000/metrics | grep kuber_'
+```
+
+### TLS
+
+The node-local kubelet uses a self-signed serving certificate, so TLS
+verification is **skipped by default**. Set `--kubelet-insecure=false` only if
+your kubelet presents a CA-trusted certificate.
 
 ### Security / SSRF caveat
 
