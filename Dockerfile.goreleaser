@@ -1,0 +1,6 @@
+# Built by GoReleaser: the prebuilt static binary is copied into the build
+# context, so this stays RUN-free (cross-arch images need no emulation).
+FROM alpine:3.20
+COPY gitlab-procs-exporter /usr/bin/gitlab-procs-exporter
+EXPOSE 8000
+ENTRYPOINT ["/usr/bin/gitlab-procs-exporter"]
