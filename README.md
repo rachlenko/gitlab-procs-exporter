@@ -367,6 +367,29 @@ sudo gitlab-procs-exporter --deploy-as-systemd-service \
   --config /etc/gitlab-procs-exporter/config.yaml
 ```
 
+### Adding sensitive-data filters
+
+`redact_key_substrings` is how you extend redaction beyond the built-ins. Each
+entry is a **case-insensitive substring matched against the variable name**; any
+match renders that variable as `NAME=[REDACTED]` in `gitlab_process_info`. To
+add a filter, list the substrings that identify your sensitive variables:
+
+```yaml
+redact_key_substrings:
+  - vault            # hides VAULT_ADDR, VAULT_TOKEN, MY_VAULT_KEY, …
+  - internal_token   # hides INTERNAL_TOKEN, SVC_INTERNAL_TOKEN, …
+  - _pat             # hides GITHUB_PAT, GL_PAT, …
+```
+
+Matching is substring, not exact, so keep entries **specific**: a short fragment
+like `id` would also hide `BUILD_ID` / `CI_PIPELINE_ID`. Over-redaction is
+fail-safe — it only ever hides values, never leaks them — but it can remove
+variables you wanted to keep, so prefer the longest unambiguous fragment.
+Values that merely *look* like secrets (token prefixes such as `glpat-`/`ghp_`,
+JWTs, long high-entropy strings) are already redacted by the built-in value
+heuristics regardless of this list, so you only need entries for names the
+built-ins miss.
+
 ## Kubernetes job-resource metrics
 
 When the exporter runs **inside a Kubernetes cluster** (deployed as a
@@ -466,7 +489,7 @@ spec:
       containers:
         - name: exporter
           # Multi-arch image published to ghcr.io on each release (amd64 + arm64).
-          image: ghcr.io/rachlenko/gitlab-procs-exporter:v0.0.14
+          image: ghcr.io/rachlenko/gitlab-procs-exporter:v0.0.15
           args: ["--port=8000", "--interval=10s"]
           securityContext:
             runAsUser: 0                 # root — required to read other processes' environ/cgroup
@@ -490,6 +513,58 @@ Apply with `kubectl apply -f daemonset.yaml`, then verify on one pod:
 ```bash
 kubectl -n monitoring exec ds/gitlab-procs-exporter -- \
   sh -c 'wget -qO- localhost:8000/metrics | grep kuber_'
+```
+
+### Supplying `--config` (sensitive-data filters) in Kubernetes
+
+The redaction filters from [Adding sensitive-data filters](#adding-sensitive-data-filters)
+work in-cluster too: ship the config as a `ConfigMap`, mount it into the
+DaemonSet, and point `--config` at the mounted path.
+
+Add a ConfigMap alongside the manifest above:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitlab-procs-exporter-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    redact_key_substrings:
+      - vault
+      - internal_token
+```
+
+Then extend the DaemonSet's container with the flag + a read-only mount, and
+declare the volume (the rest of the container spec — `securityContext`, `ports`,
+`env` — stays as shown earlier):
+
+```yaml
+      containers:
+        - name: exporter
+          image: ghcr.io/rachlenko/gitlab-procs-exporter:v0.0.15
+          args:
+            - "--port=8000"
+            - "--interval=10s"
+            - "--config=/etc/gitlab-procs-exporter/config.yaml"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/gitlab-procs-exporter
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: gitlab-procs-exporter-config
+```
+
+The config is read **once at startup** and is **fail-fast**: a missing or
+malformed file makes the pod exit (visible as `CrashLoopBackOff` / in
+`kubectl logs`). After editing the ConfigMap, restart the DaemonSet so the new
+filters take effect:
+
+```bash
+kubectl -n monitoring rollout restart ds/gitlab-procs-exporter
 ```
 
 ### TLS
