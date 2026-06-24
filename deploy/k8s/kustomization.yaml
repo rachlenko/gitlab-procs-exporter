@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Apply with:  kubectl apply -k deploy/k8s/
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - rbac.yaml
+  - configmap.yaml
+  - daemonset.yaml
+
+# Pin the image centrally (overrides the tag in daemonset.yaml):
+images:
+  - name: ghcr.io/rachlenko/gitlab-procs-exporter
+    newTag: v0.0.15
