@@ -1,0 +1,17 @@
+# ClusterIP Service fronting the DaemonSet pods on the metrics port. A Service
+# is required so the ServiceMonitor has Endpoints to scrape.
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-procs-exporter
+  namespace: monitoring
+  labels:
+    app: gitlab-procs-exporter
+spec:
+  type: ClusterIP
+  selector:
+    app: gitlab-procs-exporter
+  ports:
+    - name: metrics
+      port: 8000
+      targetPort: metrics

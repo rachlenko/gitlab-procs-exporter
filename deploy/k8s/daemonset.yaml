@@ -32,7 +32,7 @@ spec:
       containers:
         - name: exporter
           # Multi-arch image published to ghcr.io on each release (amd64 + arm64).
-          image: ghcr.io/rachlenko/gitlab-procs-exporter:v0.0.15
+          image: ghcr.io/rachlenko/gitlab-procs-exporter:v0.0.16
           args:
             - "--port=8000"
             - "--interval=10s"

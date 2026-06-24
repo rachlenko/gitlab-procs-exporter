@@ -1,0 +1,23 @@
+# Tells the Prometheus Operator to scrape the exporter Service's endpoints.
+# Requires the Prometheus Operator CRDs (see deploy/argocd/kube-prometheus-stack.yaml).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gitlab-procs-exporter
+  namespace: monitoring
+  labels:
+    app: gitlab-procs-exporter
+    # Matched by kube-prometheus-stack's default serviceMonitorSelector. Harmless
+    # when serviceMonitorSelectorNilUsesHelmValues=false (matches all).
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: gitlab-procs-exporter
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s

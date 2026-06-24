@@ -8,8 +8,10 @@ resources:
   - rbac.yaml
   - configmap.yaml
   - daemonset.yaml
+  - service.yaml
+  - servicemonitor.yaml
 
 # Pin the image centrally (overrides the tag in daemonset.yaml):
 images:
   - name: ghcr.io/rachlenko/gitlab-procs-exporter
-    newTag: v0.0.15
+    newTag: v0.0.16
