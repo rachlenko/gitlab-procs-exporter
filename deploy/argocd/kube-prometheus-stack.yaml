@@ -24,6 +24,13 @@ spec:
         grafana:
           enabled: true
           defaultDashboardsEnabled: false
+          sidecar:
+            dashboards:
+              # Honor the `grafana_folder` annotation on dashboard ConfigMaps so
+              # they land in a named folder instead of "General".
+              folderAnnotation: grafana_folder
+              provider:
+                foldersFromFilesStructure: true
         alertmanager:
           enabled: true
         prometheus:
