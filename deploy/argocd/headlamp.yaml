@@ -1,0 +1,28 @@
+# ArgoCD Application installing Headlamp — a web UI for the cluster (used as the
+# k3s "dashboard"). The Kubernetes Dashboard chart repo (kubernetes.github.io/
+# dashboard) was returning 404, so Headlamp is used instead. Apply with:
+#   kubectl apply -f deploy/argocd/headlamp.yaml -n argocd
+# Log in with a token — see deploy/k8s-dashboard/admin-user.yaml and the
+# open_k3s shell helper.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: headlamp
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://kubernetes-sigs.github.io/headlamp/
+    chart: headlamp
+    targetRevision: 0.43.0
+    helm:
+      releaseName: headlamp
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: headlamp
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
