@@ -17,10 +17,15 @@ spec:
     helm:
       releaseName: kube-prometheus-stack
       values: |
+        # Bundled dashboards and alerting/recording rules are off for now —
+        # Grafana and Alertmanager run clean, ready to add our own later.
+        defaultRules:
+          create: false
         grafana:
-          enabled: false
+          enabled: true
+          defaultDashboardsEnabled: false
         alertmanager:
-          enabled: false
+          enabled: true
         prometheus:
           prometheusSpec:
             # Discover ServiceMonitors in any namespace regardless of the
