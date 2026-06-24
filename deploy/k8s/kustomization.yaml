@@ -10,6 +10,7 @@ resources:
   - daemonset.yaml
   - service.yaml
   - servicemonitor.yaml
+  - dashboard-configmap.yaml
 
 # Pin the image centrally (overrides the tag in daemonset.yaml):
 images:
