@@ -1,0 +1,21 @@
+# ArgoCD Application that deploys the gitlab-procs-exporter DaemonSet from this
+# repo's deploy/k8s/ kustomization. Apply into the argocd namespace:
+#   kubectl apply -f deploy/argocd/application.yaml -n argocd
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitlab-procs-exporter
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/rachlenko/gitlab-procs-exporter.git
+    path: deploy/k8s
+    targetRevision: v0.0.16
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
