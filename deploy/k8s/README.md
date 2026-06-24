@@ -15,6 +15,8 @@ and [Adding sensitive-data filters](../../README.md#adding-sensitive-data-filter
 | `rbac.yaml` | ClusterRole + binding granting `get nodes/proxy` (kubelet `/pods` authz). |
 | `configmap.yaml` | `config.yaml` with `redact_key_substrings` (the redaction filters). |
 | `daemonset.yaml` | The DaemonSet itself. |
+| `service.yaml` | ClusterIP Service fronting the pods on the `metrics` port. |
+| `servicemonitor.yaml` | Prometheus Operator ServiceMonitor scraping that Service. |
 | `kustomization.yaml` | Ties them together for `kubectl apply -k`. |
 
 ## Apply
@@ -54,9 +56,22 @@ kubectl -n monitoring rollout restart ds/gitlab-procs-exporter
 
 ## Prometheus scraping
 
-The DaemonSet pods carry `prometheus.io/scrape` annotations. If you run the
-Prometheus Operator instead, add a `PodMonitor` selecting
-`app: gitlab-procs-exporter` on port `metrics`.
+Two options are included:
+
+- **Prometheus Operator (recommended):** `service.yaml` + `servicemonitor.yaml`
+  are applied by this kustomization. The ServiceMonitor scrapes the Service's
+  endpoints on the `metrics` port every 30s. It needs the Operator's CRDs — see
+  [`deploy/argocd/kube-prometheus-stack.yaml`](../argocd/kube-prometheus-stack.yaml),
+  an ArgoCD Application that installs `kube-prometheus-stack` (with
+  `serviceMonitorSelectorNilUsesHelmValues: false` so this ServiceMonitor is
+  discovered). Apply the stack **before** the ServiceMonitor so the CRD exists.
+- **Plain Prometheus:** the DaemonSet pods also carry `prometheus.io/scrape`
+  annotations for `kubernetes_sd_configs` relabeling, if you don't run the
+  Operator.
+
+> Without the Prometheus Operator CRDs installed, `kubectl apply -k` fails on the
+> `ServiceMonitor` kind. Either install the stack first, or temporarily drop
+> `servicemonitor.yaml` from `kustomization.yaml`.
 
 ## TLS
 

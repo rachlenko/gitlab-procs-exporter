@@ -11,7 +11,9 @@ spec:
   source:
     repoURL: https://github.com/rachlenko/gitlab-procs-exporter.git
     path: deploy/k8s
-    targetRevision: v0.0.16
+    # Track main so deploy-manifest changes (Service, ServiceMonitor, image tag)
+    # roll out via GitOps. The container image itself is pinned in kustomization.yaml.
+    targetRevision: main
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring

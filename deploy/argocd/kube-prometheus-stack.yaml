@@ -1,0 +1,50 @@
+# ArgoCD Application that installs the Prometheus Operator + Prometheus
+# (kube-prometheus-stack Helm chart) so the exporter's ServiceMonitor is
+# discovered and scraped. Grafana/Alertmanager are disabled to keep the
+# footprint small for a lab cluster. Apply into the argocd namespace:
+#   kubectl apply -f deploy/argocd/kube-prometheus-stack.yaml -n argocd
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 87.1.0
+    helm:
+      releaseName: kube-prometheus-stack
+      values: |
+        grafana:
+          enabled: false
+        alertmanager:
+          enabled: false
+        prometheus:
+          prometheusSpec:
+            # Discover ServiceMonitors in any namespace regardless of the
+            # Helm release label, so our exporter's ServiceMonitor is scraped.
+            serviceMonitorSelectorNilUsesHelmValues: false
+            podMonitorSelectorNilUsesHelmValues: false
+            ruleSelectorNilUsesHelmValues: false
+            probeSelectorNilUsesHelmValues: false
+            retention: 6h
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                memory: 768Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # ServerSideApply avoids the "metadata.annotations too long" error on the
+      # large kube-prometheus-stack CRDs.
+      - ServerSideApply=true
+      - CreateNamespace=true
