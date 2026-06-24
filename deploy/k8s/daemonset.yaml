@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gitlab-procs-exporter
+  namespace: monitoring
+  labels:
+    app: gitlab-procs-exporter
+spec:
+  selector:
+    matchLabels:
+      app: gitlab-procs-exporter
+  template:
+    metadata:
+      labels:
+        app: gitlab-procs-exporter
+      annotations:
+        # Optional: discover via Prometheus' prometheus.io/* relabeling.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: gitlab-procs-exporter
+      # Share the host PID namespace so /proc inside the container reflects the
+      # node's processes (NOT a bind-mount of /proc). This is what lets the
+      # exporter read the host's process table.
+      hostPID: true
+      # One pod per Linux node, including tainted/control-plane nodes.
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: exporter
+          # Multi-arch image published to ghcr.io on each release (amd64 + arm64).
+          image: ghcr.io/rachlenko/gitlab-procs-exporter:v0.0.15
+          args:
+            - "--port=8000"
+            - "--interval=10s"
+            - "--config=/etc/gitlab-procs-exporter/config.yaml"
+          securityContext:
+            # root is required to read every process's /proc/<pid>/environ and
+            # I/O counters.
+            runAsUser: 0
+          ports:
+            - name: metrics
+              containerPort: 8000
+          env:
+            # Which kubelet to query for pod resource requests: this node's IP.
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            # Optional fallback if HOST_IP is unset:
+            # - name: NODE_NAME
+            #   valueFrom:
+            #     fieldRef:
+            #       fieldPath: spec.nodeName
+          volumeMounts:
+            - name: config
+              mountPath: /etc/gitlab-procs-exporter
+              readOnly: true
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: config
+          configMap:
+            name: gitlab-procs-exporter-config

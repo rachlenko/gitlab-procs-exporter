@@ -1,0 +1,24 @@
+# The kubelet authorizes the ServiceAccount token (Webhook auth, the kubeadm
+# default) by checking `get` on `nodes/proxy` — required for the exporter to
+# read GET https://$HOST_IP:10250/pods and emit the kuber_*_request metrics.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitlab-procs-exporter-kubelet
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitlab-procs-exporter-kubelet
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gitlab-procs-exporter-kubelet
+subjects:
+  - kind: ServiceAccount
+    name: gitlab-procs-exporter
+    namespace: monitoring

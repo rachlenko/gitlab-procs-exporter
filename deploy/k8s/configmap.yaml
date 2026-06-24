@@ -1,0 +1,15 @@
+# Extra environ redaction filters for the gitlab_process_info metric.
+# Each entry is a case-insensitive substring matched against the variable NAME;
+# any match renders that variable as NAME=[REDACTED]. See the project README
+# section "Adding sensitive-data filters". Edit and `kubectl rollout restart`
+# the DaemonSet to apply changes (config is read once at startup, fail-fast).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitlab-procs-exporter-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    redact_key_substrings:
+      - vault
+      - internal_token
