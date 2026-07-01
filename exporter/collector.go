@@ -92,7 +92,7 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 		infoDesc: prometheus.NewDesc(
 			"gitlab_process_info",
 			"Metadata about the process including cmdline and parsed environ variables (scrubbed for secrets).",
-			append([]string{"pid", "name", "cmdline", "environ"}, ciJobLabelNames()...), nil,
+			append([]string{"pid", "name", "cmdline", "environ", "environ_truncated"}, ciJobLabelNames()...), nil,
 		),
 	}
 }
@@ -108,11 +108,38 @@ func (pc *ProcessCollector) keyInExtra(key string) bool {
 	return false
 }
 
+// Bounds on the gitlab_process_info "environ" label so a single process can't
+// emit an unbounded value and fail the whole Prometheus scrape. A process that
+// carries its config in the environment (tens of KB) is the case these guard.
+const (
+	// maxEnvironVars caps how many variables (sorted by key) are emitted.
+	maxEnvironVars = 100
+	// maxEnvironValueLen caps a single value's length in bytes; longer values
+	// are replaced with environValueTruncMarker whole (never byte-cut, so the
+	// label stays valid UTF-8).
+	maxEnvironValueLen = 256
+	// maxEnvironBytes is a hard ceiling on the joined label, kept below the
+	// typical Prometheus label_value_length_limit (10240) so we never trip it.
+	// 100 vars * 256 bytes could otherwise reach ~28KB, so this is the backstop
+	// that actually guarantees the scrape survives.
+	maxEnvironBytes = 8192
+)
+
+// environValueTruncMarker replaces a value longer than maxEnvironValueLen. It's
+// distinct from "[REDACTED]" so "too long" is distinguishable from "secret".
+const environValueTruncMarker = "[TRUNCATED]"
+
 // scrubEnviron renders the environ map as a comma-joined "k=v" string,
-// redacting any pair whose key or value looks sensitive: the built-in
-// denylist (IsSecretKey), operator-configured substrings (keyInExtra), or
-// the value-shape heuristics (IsSecretValue).
-func (pc *ProcessCollector) scrubEnviron(environ map[string]string) string {
+// redacting any pair whose key or value looks sensitive (IsSecretKey /
+// keyInExtra / IsSecretValue) and bounding the total size (see maxEnviron*).
+//
+// The returned bool is the gitlab_process_info "environ_truncated" flag and
+// means exactly one thing: the variable LIST is incomplete — one or more
+// variables were entirely omitted, either because there were more than
+// maxEnvironVars of them or because the maxEnvironBytes ceiling was reached.
+// It is deliberately NOT set by [REDACTED] or by per-value [TRUNCATED]: those
+// keep the variable present (only its value changes), so the list is complete.
+func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, bool) {
 	// Sort keys so the gitlab_process_info "environ" label is stable across
 	// scrapes (map iteration order is otherwise non-deterministic).
 	keys := make([]string, 0, len(environ))
@@ -121,15 +148,39 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) string {
 	}
 	sort.Strings(keys)
 
-	envPairs := make([]string, 0, len(keys))
+	truncated := false
+	if len(keys) > maxEnvironVars {
+		keys = keys[:maxEnvironVars]
+		truncated = true
+	}
+
+	var b strings.Builder
 	for _, k := range keys {
 		val := environ[k]
-		if IsSecretKey(k) || pc.keyInExtra(k) || IsSecretValue(val) {
+		switch {
+		case IsSecretKey(k) || pc.keyInExtra(k) || IsSecretValue(val):
 			val = "[REDACTED]"
+		case len(val) > maxEnvironValueLen:
+			val = environValueTruncMarker
 		}
-		envPairs = append(envPairs, fmt.Sprintf("%s=%s", k, val))
+		pair := fmt.Sprintf("%s=%s", k, val)
+
+		sep := 0
+		if b.Len() > 0 {
+			sep = len(", ")
+		}
+		// Stop at a pair boundary once the ceiling would be exceeded, so the
+		// label is always valid UTF-8 and never over maxEnvironBytes.
+		if b.Len()+sep+len(pair) > maxEnvironBytes {
+			truncated = true
+			break
+		}
+		if sep > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(pair)
 	}
-	return strings.Join(envPairs, ", ")
+	return b.String(), truncated
 }
 
 // Describe implements the prometheus.Collector interface.
@@ -158,8 +209,13 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(pc.ioReadDesc, prometheus.CounterValue, float64(p.IORead), labels...)
 		ch <- prometheus.MustNewConstMetric(pc.ioWriteDesc, prometheus.CounterValue, float64(p.IOWrite), labels...)
 
-		// Emit metadata info metric (environ scrubbed for secrets)
-		infoLabels := append([]string{pidStr, p.Name, p.CmdLine, pc.scrubEnviron(p.Environ)}, ciVals...)
+		// Emit metadata info metric (environ scrubbed for secrets and bounded)
+		environ, environTruncated := pc.scrubEnviron(p.Environ)
+		truncatedLabel := "0"
+		if environTruncated {
+			truncatedLabel = "1"
+		}
+		infoLabels := append([]string{pidStr, p.Name, p.CmdLine, environ, truncatedLabel}, ciVals...)
 		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
 	}
 }

@@ -189,7 +189,7 @@ func TestProcessCollectorKeyInExtra(t *testing.T) {
 
 func TestScrubEnvironConfiguredKey(t *testing.T) {
 	pc := NewProcessCollector(NewHistoryStore(), "vault")
-	out := pc.scrubEnviron(map[string]string{
+	out, _ := pc.scrubEnviron(map[string]string{
 		"VAULT_ADDR":  "https://vault.example:8200", // key not in built-in denylist; value not secret-shaped
 		"CI_JOB_NAME": "build",
 	})
@@ -206,7 +206,7 @@ func TestScrubEnvironConfiguredKey(t *testing.T) {
 
 func TestScrubEnvironBuiltinStillWorks(t *testing.T) {
 	pc := NewProcessCollector(NewHistoryStore()) // no extras
-	out := pc.scrubEnviron(map[string]string{"API_KEY": "abc", "USER": "gitlab"})
+	out, _ := pc.scrubEnviron(map[string]string{"API_KEY": "abc", "USER": "gitlab"})
 	if !strings.Contains(out, "API_KEY=[REDACTED]") {
 		t.Errorf("expected built-in denylist to redact API_KEY, got %q", out)
 	}
@@ -218,9 +218,58 @@ func TestScrubEnvironBuiltinStillWorks(t *testing.T) {
 func TestScrubEnvironDeterministicOrder(t *testing.T) {
 	pc := NewProcessCollector(NewHistoryStore())
 	// Keys chosen so none trips the built-in denylist or value heuristics.
-	out := pc.scrubEnviron(map[string]string{"ZED": "1", "ALPHA": "2", "MIKE": "3"})
+	out, _ := pc.scrubEnviron(map[string]string{"ZED": "1", "ALPHA": "2", "MIKE": "3"})
 	want := "ALPHA=2, MIKE=3, ZED=1" // keys sorted lexicographically for a stable label
 	if out != want {
 		t.Errorf("expected sorted order %q, got %q", want, out)
+	}
+}
+
+func TestScrubEnvironBounds(t *testing.T) {
+	pc := NewProcessCollector(NewHistoryStore())
+
+	// Over-long value is replaced whole, not byte-cut, and flagged truncated.
+	longVal := strings.Repeat("x", maxEnvironValueLen+1)
+	out, trunc := pc.scrubEnviron(map[string]string{"BIG": longVal})
+	if strings.Contains(out, "x") || !strings.Contains(out, "BIG="+environValueTruncMarker) {
+		t.Errorf("expected over-long value replaced with %q, got %q", environValueTruncMarker, out)
+	}
+	if trunc {
+		t.Error("single over-long value should not set the truncated flag (nothing dropped)")
+	}
+
+	// Redaction keeps the variable present, so it must NOT set the flag either.
+	out, trunc = pc.scrubEnviron(map[string]string{"API_KEY": "abc", "USER": "gitlab"})
+	if !strings.Contains(out, "API_KEY=[REDACTED]") {
+		t.Errorf("expected API_KEY redacted, got %q", out)
+	}
+	if trunc {
+		t.Error("redaction should not set environ_truncated (variable list is complete)")
+	}
+
+	// More than maxEnvironVars variables: excess dropped, flag set.
+	many := make(map[string]string, maxEnvironVars+50)
+	for i := 0; i < maxEnvironVars+50; i++ {
+		many[fmt.Sprintf("K%04d", i)] = "v"
+	}
+	out, trunc = pc.scrubEnviron(many)
+	if !trunc {
+		t.Error("expected truncated flag when variable count exceeds the cap")
+	}
+	if got := strings.Count(out, "="); got > maxEnvironVars {
+		t.Errorf("expected at most %d pairs, got %d", maxEnvironVars, got)
+	}
+
+	// Hard byte ceiling: many medium values must never exceed maxEnvironBytes.
+	big := make(map[string]string, maxEnvironVars)
+	for i := 0; i < maxEnvironVars; i++ {
+		big[fmt.Sprintf("K%04d", i)] = strings.Repeat("y", maxEnvironValueLen)
+	}
+	out, trunc = pc.scrubEnviron(big)
+	if len(out) > maxEnvironBytes {
+		t.Errorf("environ label %d bytes exceeds ceiling %d", len(out), maxEnvironBytes)
+	}
+	if !trunc {
+		t.Error("expected truncated flag when byte ceiling is hit")
 	}
 }
