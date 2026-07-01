@@ -9,6 +9,37 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// ciJobLabelKeys maps GitLab CI environment variables to dedicated metric
+// labels. Promoting them out of the `environ` blob lets resource metrics be
+// grouped/joined by job directly (no regexp over environ at query time).
+// The order here defines label order everywhere it's used.
+var ciJobLabelKeys = []struct{ env, label string }{
+	{"CI_JOB_ID", "ci_job_id"},
+	{"CI_JOB_NAME", "ci_job_name"},
+	{"CI_PROJECT_PATH", "ci_project_path"},
+	{"CI_PIPELINE_ID", "ci_pipeline_id"},
+}
+
+// ciJobLabelNames returns just the label names, in order.
+func ciJobLabelNames() []string {
+	names := make([]string, len(ciJobLabelKeys))
+	for i, k := range ciJobLabelKeys {
+		names[i] = k.label
+	}
+	return names
+}
+
+// ciJobLabelValues extracts the promoted CI label values from a process
+// environ map. A missing variable yields "" — Prometheus treats an empty
+// label value as absent, so non-CI processes simply carry no job identity.
+func ciJobLabelValues(environ map[string]string) []string {
+	vals := make([]string, len(ciJobLabelKeys))
+	for i, k := range ciJobLabelKeys {
+		vals[i] = environ[k.env]
+	}
+	return vals
+}
+
 // ProcessCollector translates active processes in HistoryStore into Prometheus metrics.
 type ProcessCollector struct {
 	store *HistoryStore
@@ -28,7 +59,7 @@ type ProcessCollector struct {
 
 // NewProcessCollector creates and initializes a ProcessCollector.
 func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *ProcessCollector {
-	commonLabels := []string{"pid", "name"}
+	commonLabels := append([]string{"pid", "name"}, ciJobLabelNames()...)
 
 	return &ProcessCollector{
 		store:              store,
@@ -61,7 +92,7 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 		infoDesc: prometheus.NewDesc(
 			"gitlab_process_info",
 			"Metadata about the process including cmdline and parsed environ variables (scrubbed for secrets).",
-			[]string{"pid", "name", "cmdline", "environ"}, nil,
+			append([]string{"pid", "name", "cmdline", "environ"}, ciJobLabelNames()...), nil,
 		),
 	}
 }
@@ -117,7 +148,8 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 
 	for _, p := range processes {
 		pidStr := fmt.Sprintf("%d", p.PID)
-		labels := []string{pidStr, p.Name}
+		ciVals := ciJobLabelValues(p.Environ)
+		labels := append([]string{pidStr, p.Name}, ciVals...)
 
 		// Emit core stats
 		ch <- prometheus.MustNewConstMetric(pc.cpuDesc, prometheus.CounterValue, p.CPUUsage, labels...)
@@ -127,7 +159,7 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(pc.ioWriteDesc, prometheus.CounterValue, float64(p.IOWrite), labels...)
 
 		// Emit metadata info metric (environ scrubbed for secrets)
-		infoLabels := []string{pidStr, p.Name, p.CmdLine, pc.scrubEnviron(p.Environ)}
+		infoLabels := append([]string{pidStr, p.Name, p.CmdLine, pc.scrubEnviron(p.Environ)}, ciVals...)
 		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
 	}
 }
