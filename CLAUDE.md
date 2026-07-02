@@ -25,5 +25,7 @@ Prometheus process exporter with an active 10-minute sliding cache in-memory buf
 * Keep one `*_test.go` file associated directly per implementation file.
 * Use `sync.RWMutex` to isolate write threads in `HistoryStore` from foreground scrapes.
 * Prevent metric leaks by filtering out dynamic sensitive tokens in `IsSecretKey()`.
-* Keep process handlers lightweight: persist `*process.Process` pointers inside scraping caches to avoid reading Jiffies baseline tables repetitively.
+* Every label value sourced from `/proc` (name, cmdline, environ, CI vars) MUST pass through `sanitizeLabelValue()` before reaching `MustNewConstMetric` — it panics on invalid UTF-8, and that panic fires on the registry's gather goroutine, crashing the whole exporter.
+* Any boundary that emits process environ outside the Prometheus label path (notably the `/api/processes` and `/api/history` JSON handlers) MUST route it through `exporter.RedactEnviron()`; secret scrubbing is not exclusive to the collector. Both `RedactEnviron` and `scrubEnviron` share the `isSensitivePair()` predicate so they can't disagree on what counts as a secret.
+* Keep process handlers lightweight: persist `*process.Process` pointers inside scraping caches to avoid reading Jiffies baseline tables repetitively. Look up cached pointers via `liveProcess()`, which evicts stale entries on PID reuse.
 * Any temporary testing files MUST be cleaned up via deferred closures.

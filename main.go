@@ -208,15 +208,13 @@ func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.His
 		return
 	}
 
-	// Rebuild each timeline with redacted environ copies; the store's own
-	// samples are never touched.
-	for key, samples := range history {
-		redacted := make([]exporter.ProcessSample, len(samples))
-		for i, s := range samples {
-			s.Environ = exporter.RedactEnviron(s.Environ, redactKeySubstrings)
-			redacted[i] = s
+	// Redact each timeline's environ in place. QueryHistory already returns
+	// fresh copies of the sample slices (see exporter.HistoryStore.QueryHistory),
+	// so mutating them here never touches the store's own samples.
+	for _, samples := range history {
+		for i := range samples {
+			samples[i].Environ = exporter.RedactEnviron(samples[i].Environ, redactKeySubstrings)
 		}
-		history[key] = redacted
 	}
 
 	_ = json.NewEncoder(w).Encode(history)

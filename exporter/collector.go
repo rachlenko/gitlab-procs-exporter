@@ -110,21 +110,24 @@ func keyMatchesAny(key string, substrings []string) bool {
 	return false
 }
 
-// keyInExtra reports whether key matches any operator-configured substring.
-func (pc *ProcessCollector) keyInExtra(key string) bool {
-	return keyMatchesAny(key, pc.extraKeySubstrings)
+// isSensitivePair reports whether an environ variable must be redacted, by the
+// key denylist (IsSecretKey), operator-configured substrings (must already be
+// normalized, see normalizeSubstrings), or the value-shape heuristics
+// (IsSecretValue). This is the single source of truth shared by the Prometheus
+// label path (scrubEnviron) and the JSON API path (RedactEnviron) so the two
+// can never disagree on what counts as a secret.
+func isSensitivePair(key, val string, extraKeySubstrings []string) bool {
+	return IsSecretKey(key) || keyMatchesAny(key, extraKeySubstrings) || IsSecretValue(val)
 }
 
 // RedactEnviron returns a copy of environ with every sensitive value replaced
 // by "[REDACTED]", applying the same rules as the gitlab_process_info environ
-// label: the built-in key denylist (IsSecretKey), operator-configured
-// substrings (must already be normalized, see normalizeSubstrings), and the
-// value-shape heuristics (IsSecretValue). Anything that leaves the process
-// carrying an environ — the JSON API in particular — must go through here.
+// label (see isSensitivePair). Anything that leaves the process carrying an
+// environ — the JSON API in particular — must go through here.
 func RedactEnviron(environ map[string]string, extraKeySubstrings []string) map[string]string {
 	out := make(map[string]string, len(environ))
 	for k, v := range environ {
-		if IsSecretKey(k) || keyMatchesAny(k, extraKeySubstrings) || IsSecretValue(v) {
+		if isSensitivePair(k, v, extraKeySubstrings) {
 			v = "[REDACTED]"
 		}
 		out[k] = v
@@ -186,8 +189,8 @@ func boundCmdline(s string) string {
 }
 
 // scrubEnviron renders the environ map as a comma-joined "k=v" string,
-// redacting any pair whose key or value looks sensitive (IsSecretKey /
-// keyInExtra / IsSecretValue) and bounding the total size (see maxEnviron*).
+// redacting any pair whose key or value looks sensitive (see isSensitivePair)
+// and bounding the total size (see maxEnviron*).
 //
 // The returned bool is the gitlab_process_info "environ_truncated" flag and
 // means exactly one thing: the variable LIST is incomplete — one or more
@@ -214,7 +217,7 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 	for _, k := range keys {
 		val := sanitizeLabelValue(environ[k])
 		switch {
-		case IsSecretKey(k) || pc.keyInExtra(k) || IsSecretValue(val):
+		case isSensitivePair(k, val, pc.extraKeySubstrings):
 			val = "[REDACTED]"
 		case len(val) > maxEnvironValueLen:
 			val = environValueTruncMarker

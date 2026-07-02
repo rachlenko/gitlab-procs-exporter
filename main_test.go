@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,56 @@ func TestScrape(t *testing.T) {
 		if len(cache) == 0 {
 			t.Error("expected process cache to be populated after scraping")
 		}
+	}
+
+	// The test process itself has burned CPU, so its sample must carry real
+	// cumulative CPUSeconds (user+system). This guards the scrape() → p.Times()
+	// wiring: the collector test only proves the collector emits whatever
+	// CPUSeconds it's handed, never that scrape() populates the field at all.
+	self := int32(os.Getpid()) //nolint:gosec // G115: a PID always fits in int32
+	found := false
+	for _, s := range active {
+		if s.PID == self {
+			found = true
+			if s.CPUSeconds <= 0 {
+				t.Errorf("scrape() must populate cumulative CPUSeconds for the running test process, got %v", s.CPUSeconds)
+			}
+		}
+	}
+	if len(active) > 0 && !found {
+		t.Log("warning: own PID not present among scraped processes; skipping CPUSeconds assertion")
+	}
+}
+
+// TestLiveProcessEvictsExitedPID exercises the eviction branch that is the
+// whole reason liveProcess exists: when a cached PID no longer belongs to a
+// live process, the stale *process.Process (carrying an obsolete CPU baseline
+// and create time) must be dropped so a PID-reuse newcomer never inherits it.
+func TestLiveProcessEvictsExitedPID(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start a child process on this host: %v", err)
+	}
+	pid := int32(cmd.Process.Pid) //nolint:gosec // G115: a PID always fits in int32
+	cache := make(map[int32]*process.Process)
+
+	stale, err := liveProcess(cache, pid)
+	if err != nil {
+		t.Fatalf("liveProcess failed while child was alive: %v", err)
+	}
+	if cache[pid] != stale {
+		t.Fatal("expected the live child to be cached")
+	}
+
+	// Kill and reap so the PID's cached object is now stale.
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
+	// liveProcess may return an error (PID gone) or a fresh object (PID reused),
+	// but in neither case may the stale cached object survive.
+	_, _ = liveProcess(cache, pid)
+	if cache[pid] == stale {
+		t.Error("stale cached *process.Process for an exited PID was not evicted")
 	}
 }
 
