@@ -137,10 +137,10 @@ func main() {
 	http.HandleFunc("/", serveDashboard)
 	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/api/processes", func(w http.ResponseWriter, r *http.Request) {
-		serveAPIProcesses(w, r, store)
+		serveAPIProcesses(w, r, store, redactKeySubstrings)
 	})
 	http.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
-		serveAPIHistory(w, r, store)
+		serveAPIHistory(w, r, store, redactKeySubstrings)
 	})
 
 	log.Printf("Starting GitLab Process History Exporter %s on :%d", version(), *port)
@@ -183,13 +183,16 @@ func serveDashboard(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(htmlBytes)
 }
 
-func serveAPIProcesses(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore) {
+func serveAPIProcesses(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore, redactKeySubstrings []string) {
 	w.Header().Set("Content-Type", "application/json")
 	active := store.GetActiveProcesses()
+	for i := range active {
+		active[i].Environ = exporter.RedactEnviron(active[i].Environ, redactKeySubstrings)
+	}
 	_ = json.NewEncoder(w).Encode(active)
 }
 
-func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore) {
+func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore, redactKeySubstrings []string) {
 	w.Header().Set("Content-Type", "application/json")
 
 	pidStr := r.URL.Query().Get("pid")
@@ -203,6 +206,17 @@ func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.His
 	} else {
 		http.Error(w, `{"error": "Missing 'pid' or 'name' query parameter"}`, http.StatusBadRequest)
 		return
+	}
+
+	// Rebuild each timeline with redacted environ copies; the store's own
+	// samples are never touched.
+	for key, samples := range history {
+		redacted := make([]exporter.ProcessSample, len(samples))
+		for i, s := range samples {
+			s.Environ = exporter.RedactEnviron(s.Environ, redactKeySubstrings)
+			redacted[i] = s
+		}
+		history[key] = redacted
 	}
 
 	_ = json.NewEncoder(w).Encode(history)

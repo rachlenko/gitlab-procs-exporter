@@ -156,7 +156,7 @@ git-camus -p claude-cli -m "history: QueryHistory returns sample copies to fix r
 - Produces: `func RedactEnviron(environ map[string]string, extraKeySubstrings []string) map[string]string` (exported, `exporter` package) — returns a redacted **copy**; the input map is never modified. `extraKeySubstrings` must already be normalized (lowercase/trimmed — `LoadConfig` and `NewProcessCollector` both already do this via `normalizeSubstrings`).
 - Produces: new handler signatures `serveAPIProcesses(w, r, store, redactKeySubstrings []string)` and `serveAPIHistory(w, r, store, redactKeySubstrings []string)`.
 
-- [ ] **Step 1: Write the failing unit test for `RedactEnviron`**
+- [x] **Step 1: Write the failing unit test for `RedactEnviron`**
 
 Append to `exporter/collector_test.go`:
 
@@ -185,12 +185,12 @@ func TestRedactEnviron(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./exporter/ -run TestRedactEnviron -v`
 Expected: FAIL to compile — "undefined: RedactEnviron"
 
-- [ ] **Step 3: Implement `keyMatchesAny` + `RedactEnviron`**
+- [x] **Step 3: Implement `keyMatchesAny` + `RedactEnviron`**
 
 In `exporter/collector.go`, replace `keyInExtra` (lines ~100-109) with:
 
@@ -230,12 +230,12 @@ func RedactEnviron(environ map[string]string, extraKeySubstrings []string) map[s
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test ./exporter/ -v`
 Expected: PASS
 
-- [ ] **Step 5: Write the failing API test**
+- [x] **Step 5: Write the failing API test**
 
 Append to `main_test.go` (add `"strings"` to its imports):
 
@@ -274,12 +274,12 @@ func TestServeAPIRedactsEnviron(t *testing.T) {
 }
 ```
 
-- [ ] **Step 6: Run test to verify it fails**
+- [x] **Step 6: Run test to verify it fails**
 
 Run: `go test . -run TestServeAPIRedactsEnviron -v`
 Expected: FAIL to compile — the handlers don't take a fourth argument yet. That's the intended signature change; proceed.
 
-- [ ] **Step 7: Thread the redact list through `main.go`**
+- [x] **Step 7: Thread the redact list through `main.go`**
 
 In `main.go`, update the two handlers (lines ~186-209):
 
@@ -337,17 +337,17 @@ And in `main()` (lines ~139-144), pass the already-loaded `redactKeySubstrings` 
 
 (`redactKeySubstrings` is declared at `main.go:110` and populated from `LoadConfig`, which normalizes it — no extra normalization needed.)
 
-- [ ] **Step 8: Fix the two existing call sites in `main_test.go`**
+- [x] **Step 8: Fix the two existing call sites in `main_test.go`**
 
 `TestServeAPIProcesses` (line ~63): `serveAPIProcesses(rr, req, store)` → `serveAPIProcesses(rr, req, store, nil)`.
 `TestServeAPIHistory` (lines ~103, ~113, ~132): `serveAPIHistory(rrN, reqN, store)` → `serveAPIHistory(rrN, reqN, store, nil)` (three call sites).
 
-- [ ] **Step 9: Run tests to verify they pass**
+- [x] **Step 9: Run tests to verify they pass**
 
 Run: `go test -race . ./exporter/ -v`
 Expected: PASS, including `TestServeAPIRedactsEnviron`
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 make fmt && make lint

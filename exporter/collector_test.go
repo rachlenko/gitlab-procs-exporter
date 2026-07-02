@@ -345,3 +345,26 @@ func TestScrubEnvironUTF8Safe(t *testing.T) {
 		t.Errorf("environ label is not valid UTF-8: %q", out)
 	}
 }
+
+func TestRedactEnviron(t *testing.T) {
+	in := map[string]string{ //nolint:gosec // G101: fake secrets to exercise redaction
+		"DB_PASSWORD": "unsafe-pwd-here",            // built-in denylist key
+		"VAULT_ADDR":  "https://vault.example:8200", // operator-configured substring
+		"MY_VAR":      "glpat-abcdefghij1234567890", // secret-shaped value
+		"USER":        "gitlab",                     // benign
+	}
+	out := RedactEnviron(in, []string{"vault"})
+
+	for _, k := range []string{"DB_PASSWORD", "VAULT_ADDR", "MY_VAR"} {
+		if out[k] != "[REDACTED]" {
+			t.Errorf("expected %s redacted, got %q", k, out[k])
+		}
+	}
+	if out["USER"] != "gitlab" {
+		t.Errorf("expected USER to pass through, got %q", out["USER"])
+	}
+	// The input map must not be modified.
+	if in["DB_PASSWORD"] != "unsafe-pwd-here" {
+		t.Error("RedactEnviron mutated its input map")
+	}
+}

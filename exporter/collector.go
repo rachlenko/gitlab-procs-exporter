@@ -97,15 +97,38 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 	}
 }
 
-// keyInExtra reports whether key matches any operator-configured substring.
-func (pc *ProcessCollector) keyInExtra(key string) bool {
+// keyMatchesAny reports whether key (case-insensitively) contains any of the
+// given normalized substrings.
+func keyMatchesAny(key string, substrings []string) bool {
 	k := strings.ToLower(key)
-	for _, s := range pc.extraKeySubstrings {
+	for _, s := range substrings {
 		if strings.Contains(k, s) {
 			return true
 		}
 	}
 	return false
+}
+
+// keyInExtra reports whether key matches any operator-configured substring.
+func (pc *ProcessCollector) keyInExtra(key string) bool {
+	return keyMatchesAny(key, pc.extraKeySubstrings)
+}
+
+// RedactEnviron returns a copy of environ with every sensitive value replaced
+// by "[REDACTED]", applying the same rules as the gitlab_process_info environ
+// label: the built-in key denylist (IsSecretKey), operator-configured
+// substrings (must already be normalized, see normalizeSubstrings), and the
+// value-shape heuristics (IsSecretValue). Anything that leaves the process
+// carrying an environ — the JSON API in particular — must go through here.
+func RedactEnviron(environ map[string]string, extraKeySubstrings []string) map[string]string {
+	out := make(map[string]string, len(environ))
+	for k, v := range environ {
+		if IsSecretKey(k) || keyMatchesAny(k, extraKeySubstrings) || IsSecretValue(v) {
+			v = "[REDACTED]"
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // Bounds on the gitlab_process_info "environ" label so a single process can't

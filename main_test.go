@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func TestServeAPIProcesses(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/processes", nil)
 	rr := httptest.NewRecorder()
 
-	serveAPIProcesses(rr, req, store)
+	serveAPIProcesses(rr, req, store, nil)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status code 200, got %d", rr.Code)
@@ -100,7 +101,7 @@ func TestServeAPIHistory(t *testing.T) {
 	req1 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history", nil)
 	rr1 := httptest.NewRecorder()
 
-	serveAPIHistory(rr1, req1, store)
+	serveAPIHistory(rr1, req1, store, nil)
 
 	if rr1.Code != http.StatusBadRequest {
 		t.Errorf("expected status code 400 for missing params, got %d", rr1.Code)
@@ -110,7 +111,7 @@ func TestServeAPIHistory(t *testing.T) {
 	req2 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history?pid=3333", nil)
 	rr2 := httptest.NewRecorder()
 
-	serveAPIHistory(rr2, req2, store)
+	serveAPIHistory(rr2, req2, store, nil)
 
 	if rr2.Code != http.StatusOK {
 		t.Fatalf("expected status code 200 for PID query, got %d", rr2.Code)
@@ -129,7 +130,7 @@ func TestServeAPIHistory(t *testing.T) {
 	req3 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history?name=sidekiq", nil)
 	rr3 := httptest.NewRecorder()
 
-	serveAPIHistory(rr3, req3, store)
+	serveAPIHistory(rr3, req3, store, nil)
 
 	if rr3.Code != http.StatusOK {
 		t.Fatalf("expected status code 200 for Name query, got %d", rr3.Code)
@@ -174,4 +175,37 @@ func TestStartScraper(t *testing.T) {
 
 	// Check that we got active processes scraped
 	_ = store.GetActiveProcesses()
+}
+
+// TestServeAPIRedactsEnviron pins the security boundary: the JSON API must
+// never return raw secrets — scrubbing is not only for the Prometheus label.
+func TestServeAPIRedactsEnviron(t *testing.T) {
+	store := exporter.NewHistoryStore()
+	store.AddSample(exporter.ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        4444,
+		Name:       "runner",
+		Environ:    map[string]string{"DB_PASSWORD": "unsafe-pwd-here", "USER": "gitlab"}, //nolint:gosec // G101: fake secret to exercise redaction
+		CreateTime: 100,
+		IsActive:   true,
+	})
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/processes", nil)
+	rr := httptest.NewRecorder()
+	serveAPIProcesses(rr, req, store, nil)
+	body := rr.Body.String()
+	if strings.Contains(body, "unsafe-pwd-here") {
+		t.Errorf("/api/processes leaked a secret environ value: %s", body)
+	}
+	if !strings.Contains(body, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] in /api/processes response, got: %s", body)
+	}
+
+	req2 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history?pid=4444", nil)
+	rr2 := httptest.NewRecorder()
+	serveAPIHistory(rr2, req2, store, nil)
+	body2 := rr2.Body.String()
+	if strings.Contains(body2, "unsafe-pwd-here") {
+		t.Errorf("/api/history leaked a secret environ value: %s", body2)
+	}
 }
