@@ -46,6 +46,7 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		CmdLine:    "sidekiq -c 10",
 		Environ:    map[string]string{"DB_PASSWORD": "unsafe-pwd-here", "USER": "gitlab"}, //nolint:gosec // G101: fake secret to exercise redaction
 		CPUUsage:   45.2,
+		CPUSeconds: 123.5,
 		MemoryRSS:  200 * 1024 * 1024,
 		MemoryVMS:  400 * 1024 * 1024,
 		IORead:     15000,
@@ -83,6 +84,15 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		descStr := m.Desc().String()
 		if strings.Contains(descStr, "gitlab_process_info") {
 			infoLabels = readMetricLabels(t, m)
+		}
+		if strings.Contains(descStr, "gitlab_process_cpu_seconds_total") {
+			var dtoMetric dto.Metric
+			if err := m.Write(&dtoMetric); err != nil {
+				t.Fatalf("failed to write cpu metric: %v", err)
+			}
+			if got := dtoMetric.GetCounter().GetValue(); got != 123.5 {
+				t.Errorf("cpu counter must emit cumulative CPUSeconds (123.5), got %v — emitting the percent gauge value breaks rate()", got)
+			}
 		}
 	}
 

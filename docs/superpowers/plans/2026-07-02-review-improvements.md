@@ -372,7 +372,7 @@ git-camus -p claude-cli -m "api: redact secret environ values in /api/processes 
 - Produces: `ProcessSample.CPUSeconds float64` (JSON tag `cpu_seconds`) — cumulative user+system CPU seconds. `CPUUsage` (percent) is **kept** for the dashboard/JSON API; only the Prometheus counter switches to `CPUSeconds`.
 - **Breaking metric change:** the exported value of `gitlab_process_cpu_seconds_total` changes meaning from "instantaneous percent" to "cumulative seconds". This is the fix — the name and type were already promising seconds. Dashboards that (incorrectly) charted the raw value must switch to `rate()`; the README's existing `rate()` examples become correct instead of wrong.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `exporter/collector_test.go`, inside `TestCollectorDescribeAndCollect`:
 
@@ -391,12 +391,12 @@ In `exporter/collector_test.go`, inside `TestCollectorDescribeAndCollect`:
 		}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./exporter/ -run TestCollectorDescribeAndCollect -v`
 Expected: FAIL to compile first ("unknown field CPUSeconds") — add the struct field (Step 3, first edit) and re-run; then FAIL with "cpu counter must emit cumulative CPUSeconds (123.5), got 45.2".
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `exporter/history.go` — add the field to `ProcessSample` after `CPUUsage` (line ~18):
 
@@ -423,12 +423,12 @@ and add `CPUSeconds: cpuSeconds,` to the `exporter.ProcessSample{...}` literal i
 		ch <- prometheus.MustNewConstMetric(pc.cpuDesc, prometheus.CounterValue, p.CPUSeconds, labels...)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test -race . ./exporter/ -v`
 Expected: PASS
 
-- [ ] **Step 5: Update docs and the Grafana dashboard**
+- [x] **Step 5: Update docs and the Grafana dashboard**
 
 `README.md`:
 
@@ -450,7 +450,7 @@ Expected: PASS
    `"expr": "topk(10, rate(gitlab_process_cpu_seconds_total[5m]))"`
 3. Check the surrounding panel title/axis unit in the same JSON block: if the title says "percent" or the unit is `percent`, change to "CPU cores" / unit `none` (Grafana `short`) to match the new expression.
 
-- [ ] **Step 6: Verify the full suite and the exposition manually**
+- [x] **Step 6: Verify the full suite and the exposition manually**
 
 Run: `make test`
 Expected: PASS
@@ -458,7 +458,7 @@ Expected: PASS
 Run: `go run . -port 18123 &` then `curl -s localhost:18123/metrics | grep -m3 gitlab_process_cpu_seconds_total; kill %1`
 Expected: values are cumulative seconds (large, monotonically growing on re-curl), not small percent floats.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 make fmt && make lint

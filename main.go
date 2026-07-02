@@ -302,6 +302,12 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 			cpuUsage = 0.0
 		}
 
+		// Cumulative CPU seconds (user+system) — feeds the _total counter.
+		var cpuSeconds float64
+		if times, err := p.Times(); err == nil && times != nil {
+			cpuSeconds = times.User + times.System
+		}
+
 		// Memory RSS and VMS
 		var rss, vms uint64
 		memInfo, err := p.MemoryInfo()
@@ -347,6 +353,7 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 			CmdLine:    cmdline,
 			Environ:    environMap,
 			CPUUsage:   cpuUsage,
+			CPUSeconds: cpuSeconds,
 			MemoryRSS:  rss,
 			MemoryVMS:  vms,
 			IORead:     ioRead,

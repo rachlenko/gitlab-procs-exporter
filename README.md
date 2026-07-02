@@ -135,7 +135,7 @@ labels `pid` (process id) and `name` (process comm).
 
 | Metric | Type | Unit | Meaning |
 |--------|------|------|---------|
-| `gitlab_process_cpu_seconds_total` | counter¹ | percent¹ | Per-process CPU usage as sampled by gopsutil. |
+| `gitlab_process_cpu_seconds_total` | counter | seconds | Cumulative user+system CPU time consumed by the process. |
 | `gitlab_process_resident_memory_bytes` | gauge | bytes | Resident set size (RSS). |
 | `gitlab_process_virtual_memory_bytes` | gauge | bytes | Virtual memory size (VMS). |
 | `gitlab_process_io_read_bytes_total` | counter | bytes | Cumulative bytes read from disk. |
@@ -154,13 +154,6 @@ labels `pid` (process id) and `name` (process comm).
   more than 100 variables or the total-size ceiling was reached), otherwise
   `"0"`. It is **not** set by per-value `[REDACTED]` or `[TRUNCATED]`
   substitutions — those keep the variable present, so the list is still complete.
-
-¹ **Caveat on `gitlab_process_cpu_seconds_total`:** despite the `_total` /
-`seconds` name and the counter type, the exported value is the **instantaneous
-CPU usage percent** returned by `gopsutil` (`Process.Percent`), not a
-monotonically increasing seconds counter. Treat it as a percent gauge — do
-**not** apply `rate()` to it. The two `_io_*_total` counters, by contrast, are
-genuine cumulative counters and `rate()` works on them.
 
 Example exposition:
 

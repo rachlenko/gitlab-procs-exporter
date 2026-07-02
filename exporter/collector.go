@@ -228,7 +228,7 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		labels := append([]string{pidStr, p.Name}, ciVals...)
 
 		// Emit core stats
-		ch <- prometheus.MustNewConstMetric(pc.cpuDesc, prometheus.CounterValue, p.CPUUsage, labels...)
+		ch <- prometheus.MustNewConstMetric(pc.cpuDesc, prometheus.CounterValue, p.CPUSeconds, labels...)
 		ch <- prometheus.MustNewConstMetric(pc.rssDesc, prometheus.GaugeValue, float64(p.MemoryRSS), labels...)
 		ch <- prometheus.MustNewConstMetric(pc.vmsDesc, prometheus.GaugeValue, float64(p.MemoryVMS), labels...)
 		ch <- prometheus.MustNewConstMetric(pc.ioReadDesc, prometheus.CounterValue, float64(p.IORead), labels...)
