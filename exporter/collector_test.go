@@ -378,3 +378,60 @@ func TestRedactEnviron(t *testing.T) {
 		t.Error("RedactEnviron mutated its input map")
 	}
 }
+
+// TestCollectSurvivesInvalidUTF8 pins the crash mode: MustNewConstMetric
+// panics on invalid UTF-8 label values, and that panic happens on the
+// registry's gather goroutine — one binary environ would kill the exporter.
+func TestCollectSurvivesInvalidUTF8(t *testing.T) {
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        7777,
+		Name:       "bad\xffname",
+		CmdLine:    "run \xfe--flag",
+		Environ:    map[string]string{"WEIRD\xff": "va\xfdlue", "CI_JOB_NAME": "job\xff"},
+		CreateTime: 300,
+		IsActive:   true,
+	})
+
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(NewProcessCollector(store))
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather failed on invalid UTF-8 input: %v", err)
+	}
+	if len(mfs) == 0 {
+		t.Fatal("expected metrics to be gathered")
+	}
+}
+
+func TestSanitizeLabelValue(t *testing.T) {
+	if got := sanitizeLabelValue("plain-value"); got != "plain-value" {
+		t.Errorf("valid string must pass through unchanged, got %q", got)
+	}
+	got := sanitizeLabelValue("abc\xff\xfedef")
+	if !utf8.ValidString(got) {
+		t.Errorf("sanitized value is not valid UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(got, "abc") || !strings.HasSuffix(got, "def") {
+		t.Errorf("sanitizing must preserve the valid bytes around the bad ones, got %q", got)
+	}
+}
+
+func TestBoundCmdline(t *testing.T) {
+	if got := boundCmdline("short cmd"); got != "short cmd" {
+		t.Errorf("short cmdline must pass through unchanged, got %q", got)
+	}
+	// 2-byte runes, twice the limit: the cut must land on a rune boundary.
+	long := strings.Repeat("ы", maxCmdlineBytes)
+	got := boundCmdline(long)
+	if len(got) > maxCmdlineBytes+len(environValueTruncMarker) {
+		t.Errorf("bounded cmdline is %d bytes, limit %d", len(got), maxCmdlineBytes+len(environValueTruncMarker))
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("bounded cmdline is not valid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, environValueTruncMarker) {
+		t.Errorf("expected visible truncation marker suffix, got tail %q", got[len(got)-20:])
+	}
+}

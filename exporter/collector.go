@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -35,7 +36,7 @@ func ciJobLabelNames() []string {
 func ciJobLabelValues(environ map[string]string) []string {
 	vals := make([]string, len(ciJobLabelKeys))
 	for i, k := range ciJobLabelKeys {
-		vals[i] = environ[k.env]
+		vals[i] = sanitizeLabelValue(environ[k.env])
 	}
 	return vals
 }
@@ -148,11 +149,41 @@ const (
 	// (unlimited), so this cap — not that limit — is what keeps the value small;
 	// an operator who sets label_value_length_limit below 8192 must lower this too.
 	maxEnvironBytes = 8192
+	// maxCmdlineBytes caps the gitlab_process_info "cmdline" label; a process
+	// with an enormous argv (ARG_MAX can reach 2MB) must not blow up the
+	// scrape the way an unbounded environ could.
+	maxCmdlineBytes = 2048
 )
 
 // environValueTruncMarker replaces a value longer than maxEnvironValueLen. It's
 // distinct from "[REDACTED]" so "too long" is distinguishable from "secret".
 const environValueTruncMarker = "[TRUNCATED]"
+
+// sanitizeLabelValue replaces invalid UTF-8 bytes with the Unicode
+// replacement character. MustNewConstMetric panics on invalid UTF-8, and a
+// panic in Collect happens on the registry's gather goroutine — it would
+// crash the whole exporter. Every label value sourced from /proc (name,
+// cmdline, environ, CI variables) must pass through here.
+func sanitizeLabelValue(v string) string {
+	if utf8.ValidString(v) {
+		return v
+	}
+	return strings.ToValidUTF8(v, string(utf8.RuneError))
+}
+
+// boundCmdline caps a valid-UTF-8 cmdline at maxCmdlineBytes, cutting at a
+// rune boundary and appending environValueTruncMarker so truncation is
+// visible. Input must already be sanitized (valid UTF-8).
+func boundCmdline(s string) string {
+	if len(s) <= maxCmdlineBytes {
+		return s
+	}
+	i := maxCmdlineBytes
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return s[:i] + environValueTruncMarker
+}
 
 // scrubEnviron renders the environ map as a comma-joined "k=v" string,
 // redacting any pair whose key or value looks sensitive (IsSecretKey /
@@ -181,14 +212,14 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 
 	var b strings.Builder
 	for _, k := range keys {
-		val := environ[k]
+		val := sanitizeLabelValue(environ[k])
 		switch {
 		case IsSecretKey(k) || pc.keyInExtra(k) || IsSecretValue(val):
 			val = "[REDACTED]"
 		case len(val) > maxEnvironValueLen:
 			val = environValueTruncMarker
 		}
-		pair := fmt.Sprintf("%s=%s", k, val)
+		pair := fmt.Sprintf("%s=%s", sanitizeLabelValue(k), val)
 
 		sep := 0
 		if b.Len() > 0 {
@@ -224,8 +255,9 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 
 	for _, p := range processes {
 		pidStr := fmt.Sprintf("%d", p.PID)
+		name := sanitizeLabelValue(p.Name)
 		ciVals := ciJobLabelValues(p.Environ)
-		labels := append([]string{pidStr, p.Name}, ciVals...)
+		labels := append([]string{pidStr, name}, ciVals...)
 
 		// Emit core stats
 		ch <- prometheus.MustNewConstMetric(pc.cpuDesc, prometheus.CounterValue, p.CPUSeconds, labels...)
@@ -240,7 +272,8 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		if environTruncated {
 			truncatedLabel = "1"
 		}
-		infoLabels := append([]string{pidStr, p.Name, p.CmdLine, environ, truncatedLabel}, ciVals...)
+		cmdline := boundCmdline(sanitizeLabelValue(p.CmdLine))
+		infoLabels := append([]string{pidStr, name, cmdline, environ, truncatedLabel}, ciVals...)
 		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
 	}
 }

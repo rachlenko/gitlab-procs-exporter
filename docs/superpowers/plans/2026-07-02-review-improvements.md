@@ -479,7 +479,7 @@ git-camus -p claude-cli -m "collector: emit real cumulative CPU seconds in gitla
 - Consumes: nothing from other tasks (independent of Tasks 1-3; if Task 3 landed, `Collect` already emits `p.CPUSeconds` — keep that).
 - Produces: `sanitizeLabelValue(v string) string` and `boundCmdline(s string) string` (both unexported, `exporter` package). Every label value sourced from `/proc` (name, cmdline, environ keys/values, CI values) flows through `sanitizeLabelValue`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `exporter/collector_test.go`:
 
@@ -542,12 +542,12 @@ func TestBoundCmdline(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./exporter/ -run 'TestCollectSurvivesInvalidUTF8|TestSanitizeLabelValue|TestBoundCmdline' -v`
 Expected: compile FAIL on `sanitizeLabelValue`/`boundCmdline` (undefined). Note: once they compile as stubs, `TestCollectSurvivesInvalidUTF8` **panics** (not just fails) — that is the bug being fixed.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `exporter/collector.go`, add `"unicode/utf8"` to the imports, then:
 
@@ -629,12 +629,12 @@ and in the info metric:
 		infoLabels := append([]string{pidStr, name, cmdline, environ, truncatedLabel}, ciVals...)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test -race ./exporter/ -v`
 Expected: PASS — all new tests plus every existing `TestScrubEnviron*` boundary test (they use valid UTF-8, so behavior is unchanged for them).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 make fmt && make lint
