@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -207,5 +208,25 @@ func TestServeAPIRedactsEnviron(t *testing.T) {
 	body2 := rr2.Body.String()
 	if strings.Contains(body2, "unsafe-pwd-here") {
 		t.Errorf("/api/history leaked a secret environ value: %s", body2)
+	}
+}
+
+func TestLiveProcessReusesCachedObject(t *testing.T) {
+	cache := make(map[int32]*process.Process)
+	self := int32(os.Getpid()) //nolint:gosec // G115: a PID always fits in int32
+
+	p1, err := liveProcess(cache, self)
+	if err != nil {
+		t.Fatalf("liveProcess failed for our own pid: %v", err)
+	}
+	p2, err := liveProcess(cache, self)
+	if err != nil {
+		t.Fatalf("liveProcess failed on second call: %v", err)
+	}
+	if p1 != p2 {
+		t.Error("expected the cached *process.Process to be reused for a still-running process (CPU Percent baselines live on it)")
+	}
+	if len(cache) != 1 {
+		t.Errorf("expected exactly 1 cache entry, got %d", len(cache))
 	}
 }

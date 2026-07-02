@@ -655,7 +655,7 @@ git-camus -p claude-cli -m "collector: sanitize label values to valid UTF-8 and 
 - Consumes: nothing from other tasks.
 - Produces: `liveProcess(procCache map[int32]*process.Process, pid int32) (*process.Process, error)` (unexported, `main` package). `scrape()` keeps its signature.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `main_test.go` (add `"os"` to its imports):
 
@@ -683,12 +683,12 @@ func TestLiveProcessReusesCachedObject(t *testing.T) {
 
 (PID reuse itself can't be reproduced deterministically in a unit test; the guard is exercised by `IsRunning` returning false for a stale entry, which this test's inverse — reuse for a live process — plus the existing `TestScrape` cover.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test . -run TestLiveProcessReusesCachedObject -v`
 Expected: FAIL to compile — "undefined: liveProcess"
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `main.go`, add above `scrape()`:
 
@@ -724,12 +724,12 @@ In `scrape()`, replace the cache-lookup block (lines ~257-267):
 
 (One extra `/proc` create-time read per cached PID per scrape — negligible against the environ/IO reads already done per process.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test -race . -v`
 Expected: PASS, including the existing `TestScrape` and `TestStartScraper`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 make fmt && make lint

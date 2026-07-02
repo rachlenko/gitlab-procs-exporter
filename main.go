@@ -256,6 +256,25 @@ func startKubeScraper(kubeStore *exporter.KubeStore, client *exporter.KubeletCli
 	}
 }
 
+// liveProcess returns the cached *process.Process for pid, evicting the entry
+// when the PID now belongs to a different process (the kernel reuses PIDs;
+// gopsutil's IsRunning compares create times). Without this, the newcomer
+// inherits the old process's CPU Percent baseline and cached create time.
+func liveProcess(procCache map[int32]*process.Process, pid int32) (*process.Process, error) {
+	if p, ok := procCache[pid]; ok {
+		if running, err := p.IsRunning(); err == nil && running {
+			return p, nil
+		}
+		delete(procCache, pid)
+	}
+	p, err := process.NewProcess(pid)
+	if err != nil {
+		return nil, err
+	}
+	procCache[pid] = p
+	return p, nil
+}
+
 func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, inCluster bool) {
 	pids, err := process.Pids()
 	if err != nil {
@@ -269,15 +288,9 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 	for _, pid := range pids {
 		activePids[pid] = true
 
-		// Check if we already have a persistent Process object
-		p, exists := procCache[pid]
-		if !exists {
-			var err error
-			p, err = process.NewProcess(pid)
-			if err != nil {
-				continue // Process exited or inaccessible
-			}
-			procCache[pid] = p
+		p, err := liveProcess(procCache, pid)
+		if err != nil {
+			continue // Process exited or inaccessible
 		}
 
 		// Retrieve fields, handling errors gracefully
