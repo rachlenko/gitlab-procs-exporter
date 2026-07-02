@@ -109,7 +109,11 @@ func (hs *HistoryStore) QueryHistory(queryType string, value string) map[string]
 		}
 
 		if match {
-			result[key] = samples
+			// Copy: the store mutates its own slices (MarkInactive flips
+			// IsActive on the last element) after the read lock is released.
+			out := make([]ProcessSample, len(samples))
+			copy(out, samples)
+			result[key] = out
 		}
 	}
 
