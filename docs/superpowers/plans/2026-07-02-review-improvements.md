@@ -742,7 +742,7 @@ git-camus -p claude-cli -m "scrape: evict process cache entries on PID reuse via
 
 ## Final verification (after all tasks)
 
-- [ ] Run: `make fmt && make lint && make test` — all green.
-- [ ] Run: `make build` — both binaries build.
-- [ ] Smoke: `go run . -port 18123 &`; `curl -s localhost:18123/api/processes | grep -c REDACTED` (> 0 expected on a real host); `curl -s localhost:18123/metrics | grep -m2 gitlab_process_cpu_seconds_total` (cumulative seconds); `kill %1`.
-- [ ] Open a PR from `feat/review-hardening` to `main`. No Claude/Anthropic attribution anywhere (commits, PR body, comments).
+- [x] Run: `make fmt && make lint && make test` — all green.
+- [x] Run: `make build` — both binaries build.
+- [x] Smoke: `go run . -port 18123 &`; `curl -s localhost:18123/api/processes | grep -c REDACTED` (> 0 expected on a real host); `curl -s localhost:18123/metrics | grep -m2 gitlab_process_cpu_seconds_total` (cumulative seconds); `kill %1`.
+- [x] Open a PR from `feat/review-hardening` to `main`. No Claude/Anthropic attribution anywhere (commits, PR body, comments).
