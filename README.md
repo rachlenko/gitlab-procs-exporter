@@ -142,12 +142,18 @@ labels `pid` (process id) and `name` (process comm).
 | `gitlab_process_io_write_bytes_total` | counter | bytes | Cumulative bytes written to disk. |
 | `gitlab_process_info` | gauge | `1` | Metadata-only series; the value is always `1` and the data lives in its labels. |
 
-`gitlab_process_info` carries two extra labels beyond `pid`/`name`:
+`gitlab_process_info` carries three extra labels beyond `pid`/`name`:
 
 - `cmdline` — the full process command line.
 - `environ` — the process environment as a single `KEY=VALUE, KEY2=VALUE2`
   string, **sorted by key** (stable across scrapes). Secret-looking entries are
-  rendered as `KEY=[REDACTED]` (see [Hardened environ scrubbing](#hardened-environ-scrubbing)).
+  rendered as `KEY=[REDACTED]` and the whole label is size-bounded (see
+  [Hardened environ scrubbing](#hardened-environ-scrubbing)).
+- `environ_truncated` — `"1"` when the emitted `environ` variable **list is
+  incomplete** (one or more variables were dropped entirely because there were
+  more than 100 variables or the total-size ceiling was reached), otherwise
+  `"0"`. It is **not** set by per-value `[REDACTED]` or `[TRUNCATED]`
+  substitutions — those keep the variable present, so the list is still complete.
 
 ¹ **Caveat on `gitlab_process_cpu_seconds_total`:** despite the `_total` /
 `seconds` name and the counter type, the exported value is the **instantaneous
@@ -164,7 +170,7 @@ Example exposition:
 gitlab_process_resident_memory_bytes{pid="4567",name="sidekiq"} 2.097152e+08
 # HELP gitlab_process_info Metadata about the process ... (scrubbed for secrets).
 # TYPE gitlab_process_info gauge
-gitlab_process_info{pid="4567",name="sidekiq",cmdline="sidekiq -c 10",environ="CI_JOB_NAME=build, DB_PASSWORD=[REDACTED], HOME=/root"} 1
+gitlab_process_info{pid="4567",name="sidekiq",cmdline="sidekiq -c 10",environ="CI_JOB_NAME=build, DB_PASSWORD=[REDACTED], HOME=/root",environ_truncated="0"} 1
 ```
 
 ### Kubernetes job-resource metrics (only in-cluster)
@@ -585,3 +591,19 @@ are redacted when the **key** looks sensitive (expanded denylist: tokens, certs,
 SSH/GPG, JWT, sessions, cookies, DSNs, …) **or** when the **value** looks like a
 secret (known token prefixes such as `glpat-`/`ghp_`/`AKIA`, JWTs, and long
 high-entropy strings) — even if the key name is innocuous.
+
+The `environ` label is also **size-bounded** so a single process carrying its
+config in the environment (tens of KB) can't emit a value large enough to bloat
+or fail the scrape:
+
+- at most **100 variables** (sorted by key) are emitted;
+- any single value longer than **256 bytes** is replaced whole with
+  `[TRUNCATED]` (distinct from `[REDACTED]` so "too long" is distinguishable from
+  "secret"; never byte-cut, so the label stays valid UTF-8);
+- the joined label is capped at a hard **8192-byte** ceiling, stopping at a
+  variable boundary once it would be exceeded.
+
+When the variable **list** is left incomplete — variables dropped because there
+were more than 100 or because the byte ceiling was hit — the companion
+`environ_truncated` label is set to `"1"`. Per-value `[REDACTED]`/`[TRUNCATED]`
+substitutions keep the variable present and do **not** set that flag.

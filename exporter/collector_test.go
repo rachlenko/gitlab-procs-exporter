@@ -5,8 +5,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 func TestIsSecretKey(t *testing.T) {
@@ -74,16 +76,13 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 	close(metricChan)
 
 	metricCount := 0
-	hasInfoMetric := false
-	hasRedactedEnv := false
+	var infoLabels map[string]string
 
 	for m := range metricChan {
 		metricCount++
-		// Since we cannot easily inspect internal private fields of prometheus.Metric directly without reflection,
-		// we can format the metric using its string representation or Write interface
 		descStr := m.Desc().String()
 		if strings.Contains(descStr, "gitlab_process_info") {
-			hasInfoMetric = true
+			infoLabels = readMetricLabels(t, m)
 		}
 	}
 
@@ -91,39 +90,41 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		t.Errorf("expected 6 active process metrics emitted, got %d", metricCount)
 	}
 
-	if !hasInfoMetric {
-		t.Error("expected to find gitlab_process_info metric in collected metrics")
+	if infoLabels == nil {
+		t.Fatal("expected to find gitlab_process_info metric in collected metrics")
 	}
 
-	// Direct verification of environmental redaction
-	active := store.GetActiveProcesses()
-	if len(active) == 0 {
-		t.Fatal("expected at least one active process")
+	// Verify redaction against what the collector ACTUALLY emitted, not a
+	// re-implementation of the scrubbing logic.
+	if got := infoLabels["environ"]; !strings.Contains(got, "DB_PASSWORD=[REDACTED]") {
+		t.Errorf("expected DB_PASSWORD redacted in emitted environ label, got %q", got)
 	}
-	p := active[0]
+	if got := infoLabels["environ"]; strings.Contains(got, "unsafe-pwd-here") {
+		t.Errorf("sensitive password value leaked into emitted environ label: %q", got)
+	}
+	if got := infoLabels["environ"]; !strings.Contains(got, "USER=gitlab") {
+		t.Errorf("expected USER to pass through in emitted environ label, got %q", got)
+	}
+	// A small, complete environ must report environ_truncated="0".
+	if got := infoLabels["environ_truncated"]; got != "0" {
+		t.Errorf("expected environ_truncated=%q for a complete environ, got %q", "0", got)
+	}
+}
 
-	// Test the redaction logic directly as implemented in collector.go
-	var envPairs []string
-	for k, v := range p.Environ {
-		val := v
-		if IsSecretKey(k) {
-			val = "[REDACTED]"
-			if k == "DB_PASSWORD" {
-				hasRedactedEnv = true
-			}
-		}
-		envPairs = append(envPairs, fmt.Sprintf("%s=%s", k, val))
+// readMetricLabels writes a prometheus.Metric into its dto form and returns its
+// label set as a name->value map, so tests can assert on what was actually
+// emitted rather than re-deriving it.
+func readMetricLabels(t *testing.T, m prometheus.Metric) map[string]string {
+	t.Helper()
+	var dtoMetric dto.Metric
+	if err := m.Write(&dtoMetric); err != nil {
+		t.Fatalf("failed to write metric: %v", err)
 	}
-
-	if !hasRedactedEnv {
-		t.Error("expected DB_PASSWORD to be redacted in environment variables string list")
+	labels := make(map[string]string, len(dtoMetric.Label))
+	for _, l := range dtoMetric.Label {
+		labels[l.GetName()] = l.GetValue()
 	}
-
-	for _, pair := range envPairs {
-		if strings.Contains(pair, "unsafe-pwd-here") {
-			t.Error("sensitive password value leaked into environment variables list!")
-		}
-	}
+	return labels
 }
 
 func TestIsSecretKeyExpanded(t *testing.T) {
@@ -247,7 +248,8 @@ func TestScrubEnvironBounds(t *testing.T) {
 		t.Error("redaction should not set environ_truncated (variable list is complete)")
 	}
 
-	// More than maxEnvironVars variables: excess dropped, flag set.
+	// More than maxEnvironVars variables: excess dropped, flag set, and exactly
+	// maxEnvironVars pairs survive (the small pairs stay well under the byte cap).
 	many := make(map[string]string, maxEnvironVars+50)
 	for i := 0; i < maxEnvironVars+50; i++ {
 		many[fmt.Sprintf("K%04d", i)] = "v"
@@ -256,8 +258,8 @@ func TestScrubEnvironBounds(t *testing.T) {
 	if !trunc {
 		t.Error("expected truncated flag when variable count exceeds the cap")
 	}
-	if got := strings.Count(out, "="); got > maxEnvironVars {
-		t.Errorf("expected at most %d pairs, got %d", maxEnvironVars, got)
+	if got := len(strings.Split(out, ", ")); got != maxEnvironVars {
+		t.Errorf("expected exactly %d pairs, got %d", maxEnvironVars, got)
 	}
 
 	// Hard byte ceiling: many medium values must never exceed maxEnvironBytes.
@@ -271,5 +273,75 @@ func TestScrubEnvironBounds(t *testing.T) {
 	}
 	if !trunc {
 		t.Error("expected truncated flag when byte ceiling is hit")
+	}
+}
+
+// TestScrubEnvironAtLimits pins the exact boundary conditions so an off-by-one
+// regression (> becoming >=) in either guard is caught.
+func TestScrubEnvironAtLimits(t *testing.T) {
+	pc := NewProcessCollector(NewHistoryStore())
+
+	// A value of exactly maxEnvironValueLen passes through unchanged: the guard
+	// is `len(val) > maxEnvironValueLen`.
+	exactVal := strings.Repeat("x", maxEnvironValueLen)
+	out, trunc := pc.scrubEnviron(map[string]string{"OK": exactVal})
+	if out != "OK="+exactVal {
+		t.Errorf("value of exactly %d bytes must pass through unchanged, got %q", maxEnvironValueLen, out)
+	}
+	if trunc {
+		t.Error("value at the length limit must not set the truncated flag")
+	}
+
+	// Exactly maxEnvironVars variables: all present, flag NOT set. Guard is
+	// `len(keys) > maxEnvironVars`.
+	exact := make(map[string]string, maxEnvironVars)
+	for i := 0; i < maxEnvironVars; i++ {
+		exact[fmt.Sprintf("K%04d", i)] = "v"
+	}
+	out, trunc = pc.scrubEnviron(exact)
+	if got := len(strings.Split(out, ", ")); got != maxEnvironVars {
+		t.Errorf("expected all %d pairs at the count limit, got %d", maxEnvironVars, got)
+	}
+	if trunc {
+		t.Error("exactly maxEnvironVars variables must not set the truncated flag")
+	}
+
+	// One over the count limit sets the flag.
+	over := make(map[string]string, maxEnvironVars+1)
+	for i := 0; i < maxEnvironVars+1; i++ {
+		over[fmt.Sprintf("K%04d", i)] = "v"
+	}
+	if _, trunc = pc.scrubEnviron(over); !trunc {
+		t.Error("maxEnvironVars+1 variables must set the truncated flag")
+	}
+}
+
+// TestScrubEnvironEmpty covers the trivial inputs where the loop never runs.
+func TestScrubEnvironEmpty(t *testing.T) {
+	pc := NewProcessCollector(NewHistoryStore())
+	for name, in := range map[string]map[string]string{
+		"nil":   nil,
+		"empty": {},
+	} {
+		out, trunc := pc.scrubEnviron(in)
+		if out != "" || trunc {
+			t.Errorf("%s environ: expected (\"\", false), got (%q, %v)", name, out, trunc)
+		}
+	}
+}
+
+// TestScrubEnvironUTF8Safe verifies the "replaced whole, never byte-cut" claim:
+// an over-long multi-byte value is swapped for the marker and the label stays
+// valid UTF-8.
+func TestScrubEnvironUTF8Safe(t *testing.T) {
+	pc := NewProcessCollector(NewHistoryStore())
+	// "世" is 3 bytes; repeat past the byte limit.
+	multiByte := strings.Repeat("世", maxEnvironValueLen)
+	out, _ := pc.scrubEnviron(map[string]string{"WIDE": multiByte})
+	if out != "WIDE="+environValueTruncMarker {
+		t.Errorf("expected over-long multi-byte value replaced whole, got %q", out)
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("environ label is not valid UTF-8: %q", out)
 	}
 }
