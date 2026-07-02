@@ -118,10 +118,12 @@ const (
 	// are replaced with environValueTruncMarker whole (never byte-cut, so the
 	// label stays valid UTF-8).
 	maxEnvironValueLen = 256
-	// maxEnvironBytes is a hard ceiling on the joined label, kept below the
-	// typical Prometheus label_value_length_limit (10240) so we never trip it.
-	// 100 vars * 256 bytes could otherwise reach ~28KB, so this is the backstop
-	// that actually guarantees the scrape survives.
+	// maxEnvironBytes is a hard ceiling on the joined label. It's a conservative,
+	// self-imposed cap that keeps label values small and predictable; 100 vars *
+	// 256 bytes could otherwise reach ~28KB. This is the backstop that actually
+	// bounds the label. Prometheus's label_value_length_limit defaults to 0
+	// (unlimited), so this cap — not that limit — is what keeps the value small;
+	// an operator who sets label_value_length_limit below 8192 must lower this too.
 	maxEnvironBytes = 8192
 )
 
