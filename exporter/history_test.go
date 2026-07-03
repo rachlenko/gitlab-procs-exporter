@@ -9,9 +9,6 @@ import (
 
 func TestNewHistoryStore(t *testing.T) {
 	hs := NewHistoryStore()
-	if hs == nil {
-		t.Fatal("expected non-nil HistoryStore")
-	}
 	if len(hs.processes) != 0 {
 		t.Errorf("expected empty processes map, got %d items", len(hs.processes))
 	}
@@ -251,5 +248,35 @@ func TestProcessSamplePodUID(t *testing.T) {
 	}
 	if active[0].PodUID != "abc-123" {
 		t.Errorf("expected PodUID %q, got %q", "abc-123", active[0].PodUID)
+	}
+}
+
+// TestQueryHistoryReturnsCopies guards against QueryHistory handing out the
+// store's own backing arrays: MarkInactive mutates the last sample in place
+// under the write lock, which would race with (and corrupt) a caller still
+// reading the returned slice.
+func TestQueryHistoryReturnsCopies(t *testing.T) {
+	hs := NewHistoryStore()
+	hs.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        1,
+		Name:       "bash",
+		CreateTime: 42,
+		IsActive:   true,
+	})
+
+	got := hs.QueryHistory("pid", "1")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 timeline, got %d", len(got))
+	}
+
+	// Mutates the stored sample's IsActive in place; a shared slice would
+	// expose the mutation to the previously returned result.
+	hs.MarkInactive(map[int32]bool{})
+
+	for key, samples := range got {
+		if !samples[len(samples)-1].IsActive {
+			t.Errorf("QueryHistory result for %q was mutated by MarkInactive: expected a copy", key)
+		}
 	}
 }

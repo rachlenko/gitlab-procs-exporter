@@ -16,6 +16,7 @@ type ProcessSample struct {
 	CmdLine    string            `json:"cmdline"`
 	Environ    map[string]string `json:"environ"`
 	CPUUsage   float64           `json:"cpu_usage"`      // CPU percentage usage
+	CPUSeconds float64           `json:"cpu_seconds"`    // Cumulative user+system CPU seconds
 	MemoryRSS  uint64            `json:"memory_rss"`     // RSS in bytes
 	MemoryVMS  uint64            `json:"memory_vms"`     // Virtual memory in bytes
 	IORead     uint64            `json:"io_read_bytes"`  // Cumulative bytes read
@@ -109,7 +110,11 @@ func (hs *HistoryStore) QueryHistory(queryType string, value string) map[string]
 		}
 
 		if match {
-			result[key] = samples
+			// Copy: the store mutates its own slices (MarkInactive flips
+			// IsActive on the last element) after the read lock is released.
+			out := make([]ProcessSample, len(samples))
+			copy(out, samples)
+			result[key] = out
 		}
 	}
 

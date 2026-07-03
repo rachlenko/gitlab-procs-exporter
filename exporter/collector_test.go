@@ -46,6 +46,7 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		CmdLine:    "sidekiq -c 10",
 		Environ:    map[string]string{"DB_PASSWORD": "unsafe-pwd-here", "USER": "gitlab"}, //nolint:gosec // G101: fake secret to exercise redaction
 		CPUUsage:   45.2,
+		CPUSeconds: 123.5,
 		MemoryRSS:  200 * 1024 * 1024,
 		MemoryVMS:  400 * 1024 * 1024,
 		IORead:     15000,
@@ -77,6 +78,7 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 
 	metricCount := 0
 	var infoLabels map[string]string
+	sawCPU := false
 
 	for m := range metricChan {
 		metricCount++
@@ -84,10 +86,27 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		if strings.Contains(descStr, "gitlab_process_info") {
 			infoLabels = readMetricLabels(t, m)
 		}
+		if strings.Contains(descStr, "gitlab_process_cpu_seconds_total") {
+			sawCPU = true
+			var dtoMetric dto.Metric
+			if err := m.Write(&dtoMetric); err != nil {
+				t.Fatalf("failed to write cpu metric: %v", err)
+			}
+			if got := dtoMetric.GetCounter().GetValue(); got != 123.5 {
+				t.Errorf("cpu counter must emit cumulative CPUSeconds (123.5), got %v — emitting the percent gauge value breaks rate()", got)
+			}
+		}
 	}
 
 	if metricCount != 6 {
 		t.Errorf("expected 6 active process metrics emitted, got %d", metricCount)
+	}
+
+	// Guard against the value assertion above silently no-op'ing: if the counter
+	// were renamed or dropped, the branch never runs and the test would still
+	// pass without ever checking the emitted value.
+	if !sawCPU {
+		t.Error("gitlab_process_cpu_seconds_total counter was never emitted")
 	}
 
 	if infoLabels == nil {
@@ -174,16 +193,16 @@ func TestProcessCollectorKeyInExtra(t *testing.T) {
 	store := NewHistoryStore()
 	// Constructor must normalize: mixed case and surrounding spaces.
 	pc := NewProcessCollector(store, "Vault", "  Internal_Token  ")
-	if !pc.keyInExtra("VAULT_ADDR") {
+	if !keyMatchesAny("VAULT_ADDR", pc.extraKeySubstrings) {
 		t.Error("expected VAULT_ADDR to match configured 'vault'")
 	}
-	if !pc.keyInExtra("MY_INTERNAL_TOKEN_X") {
+	if !keyMatchesAny("MY_INTERNAL_TOKEN_X", pc.extraKeySubstrings) {
 		t.Error("expected MY_INTERNAL_TOKEN_X to match 'internal_token'")
 	}
-	if pc.keyInExtra("CI_JOB_NAME") {
+	if keyMatchesAny("CI_JOB_NAME", pc.extraKeySubstrings) {
 		t.Error("did not expect CI_JOB_NAME to match")
 	}
-	if NewProcessCollector(store).keyInExtra("ANYTHING") {
+	if keyMatchesAny("ANYTHING", NewProcessCollector(store).extraKeySubstrings) {
 		t.Error("no extras configured: nothing should match")
 	}
 }
@@ -343,5 +362,107 @@ func TestScrubEnvironUTF8Safe(t *testing.T) {
 	}
 	if !utf8.ValidString(out) {
 		t.Errorf("environ label is not valid UTF-8: %q", out)
+	}
+}
+
+func TestRedactEnviron(t *testing.T) {
+	in := map[string]string{ //nolint:gosec // G101: fake secrets to exercise redaction
+		"DB_PASSWORD": "unsafe-pwd-here",            // built-in denylist key
+		"VAULT_ADDR":  "https://vault.example:8200", // operator-configured substring
+		"MY_VAR":      "glpat-abcdefghij1234567890", // secret-shaped value
+		"USER":        "gitlab",                     // benign
+	}
+	out := RedactEnviron(in, []string{"vault"})
+
+	for _, k := range []string{"DB_PASSWORD", "VAULT_ADDR", "MY_VAR"} {
+		if out[k] != "[REDACTED]" {
+			t.Errorf("expected %s redacted, got %q", k, out[k])
+		}
+	}
+	if out["USER"] != "gitlab" {
+		t.Errorf("expected USER to pass through, got %q", out["USER"])
+	}
+	// The input map must not be modified.
+	if in["DB_PASSWORD"] != "unsafe-pwd-here" {
+		t.Error("RedactEnviron mutated its input map")
+	}
+}
+
+// TestCollectSurvivesInvalidUTF8 pins the crash mode: MustNewConstMetric
+// panics on invalid UTF-8 label values, and that panic happens on the
+// registry's gather goroutine — one binary environ would kill the exporter.
+func TestCollectSurvivesInvalidUTF8(t *testing.T) {
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        7777,
+		Name:       "bad\xffname",
+		CmdLine:    "run \xfe--flag",
+		Environ:    map[string]string{"WEIRD\xff": "va\xfdlue", "CI_JOB_NAME": "job\xff"},
+		CreateTime: 300,
+		IsActive:   true,
+	})
+
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(NewProcessCollector(store))
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather failed on invalid UTF-8 input: %v", err)
+	}
+	if len(mfs) == 0 {
+		t.Fatal("expected metrics to be gathered")
+	}
+}
+
+func TestSanitizeLabelValue(t *testing.T) {
+	if got := sanitizeLabelValue("plain-value"); got != "plain-value" {
+		t.Errorf("valid string must pass through unchanged, got %q", got)
+	}
+	got := sanitizeLabelValue("abc\xff\xfedef")
+	if !utf8.ValidString(got) {
+		t.Errorf("sanitized value is not valid UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(got, "abc") || !strings.HasSuffix(got, "def") {
+		t.Errorf("sanitizing must preserve the valid bytes around the bad ones, got %q", got)
+	}
+}
+
+func TestBoundCmdline(t *testing.T) {
+	if got := boundCmdline("short cmd"); got != "short cmd" {
+		t.Errorf("short cmdline must pass through unchanged, got %q", got)
+	}
+	// 2-byte runes, twice the limit: the cut must land on a rune boundary.
+	long := strings.Repeat("ы", maxCmdlineBytes)
+	got := boundCmdline(long)
+	if len(got) > maxCmdlineBytes+len(environValueTruncMarker) {
+		t.Errorf("bounded cmdline is %d bytes, limit %d", len(got), maxCmdlineBytes+len(environValueTruncMarker))
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("bounded cmdline is not valid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, environValueTruncMarker) {
+		t.Errorf("expected visible truncation marker suffix, got tail %q", got[len(got)-20:])
+	}
+
+	// 3-byte runes: maxCmdlineBytes is not a multiple of 3, so the raw cut at
+	// maxCmdlineBytes lands MID-rune and the walk-back loop must fire. This is
+	// the case 2-byte runes (which align to the even limit) never exercise;
+	// without the walk-back the result would be invalid UTF-8 and re-introduce
+	// the MustNewConstMetric panic boundCmdline exists to prevent.
+	if maxCmdlineBytes%3 == 0 {
+		t.Fatalf("test assumes maxCmdlineBytes (%d) is not a multiple of 3", maxCmdlineBytes)
+	}
+	multi := strings.Repeat("世", maxCmdlineBytes) // 3 bytes each
+	gotMulti := boundCmdline(multi)
+	if !utf8.ValidString(gotMulti) {
+		t.Errorf("bounded 3-byte-rune cmdline is not valid UTF-8 (walk-back failed): %q", gotMulti)
+	}
+	if !strings.HasSuffix(gotMulti, environValueTruncMarker) {
+		t.Errorf("expected truncation marker suffix on 3-byte-rune cmdline, got tail %q", gotMulti[len(gotMulti)-20:])
+	}
+	// The kept prefix must be strictly shorter than the naive cut, proving the
+	// walk-back trimmed the partial rune rather than leaving it.
+	if body := strings.TrimSuffix(gotMulti, environValueTruncMarker); len(body) >= maxCmdlineBytes {
+		t.Errorf("walk-back did not trim partial rune: prefix is %d bytes, expected < %d", len(body), maxCmdlineBytes)
 	}
 }

@@ -137,10 +137,10 @@ func main() {
 	http.HandleFunc("/", serveDashboard)
 	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/api/processes", func(w http.ResponseWriter, r *http.Request) {
-		serveAPIProcesses(w, r, store)
+		serveAPIProcesses(w, r, store, redactKeySubstrings)
 	})
 	http.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
-		serveAPIHistory(w, r, store)
+		serveAPIHistory(w, r, store, redactKeySubstrings)
 	})
 
 	log.Printf("Starting GitLab Process History Exporter %s on :%d", version(), *port)
@@ -183,13 +183,16 @@ func serveDashboard(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(htmlBytes)
 }
 
-func serveAPIProcesses(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore) {
+func serveAPIProcesses(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore, redactKeySubstrings []string) {
 	w.Header().Set("Content-Type", "application/json")
 	active := store.GetActiveProcesses()
+	for i := range active {
+		active[i].Environ = exporter.RedactEnviron(active[i].Environ, redactKeySubstrings)
+	}
 	_ = json.NewEncoder(w).Encode(active)
 }
 
-func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore) {
+func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.HistoryStore, redactKeySubstrings []string) {
 	w.Header().Set("Content-Type", "application/json")
 
 	pidStr := r.URL.Query().Get("pid")
@@ -203,6 +206,15 @@ func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.His
 	} else {
 		http.Error(w, `{"error": "Missing 'pid' or 'name' query parameter"}`, http.StatusBadRequest)
 		return
+	}
+
+	// Redact each timeline's environ in place. QueryHistory already returns
+	// fresh copies of the sample slices (see exporter.HistoryStore.QueryHistory),
+	// so mutating them here never touches the store's own samples.
+	for _, samples := range history {
+		for i := range samples {
+			samples[i].Environ = exporter.RedactEnviron(samples[i].Environ, redactKeySubstrings)
+		}
 	}
 
 	_ = json.NewEncoder(w).Encode(history)
@@ -242,6 +254,25 @@ func startKubeScraper(kubeStore *exporter.KubeStore, client *exporter.KubeletCli
 	}
 }
 
+// liveProcess returns the cached *process.Process for pid, evicting the entry
+// when the PID now belongs to a different process (the kernel reuses PIDs;
+// gopsutil's IsRunning compares create times). Without this, the newcomer
+// inherits the old process's CPU Percent baseline and cached create time.
+func liveProcess(procCache map[int32]*process.Process, pid int32) (*process.Process, error) {
+	if p, ok := procCache[pid]; ok {
+		if running, err := p.IsRunning(); err == nil && running {
+			return p, nil
+		}
+		delete(procCache, pid)
+	}
+	p, err := process.NewProcess(pid)
+	if err != nil {
+		return nil, err
+	}
+	procCache[pid] = p
+	return p, nil
+}
+
 func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, inCluster bool) {
 	pids, err := process.Pids()
 	if err != nil {
@@ -255,15 +286,9 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 	for _, pid := range pids {
 		activePids[pid] = true
 
-		// Check if we already have a persistent Process object
-		p, exists := procCache[pid]
-		if !exists {
-			var err error
-			p, err = process.NewProcess(pid)
-			if err != nil {
-				continue // Process exited or inaccessible
-			}
-			procCache[pid] = p
+		p, err := liveProcess(procCache, pid)
+		if err != nil {
+			continue // Process exited or inaccessible
 		}
 
 		// Retrieve fields, handling errors gracefully
@@ -286,6 +311,12 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 		cpuUsage, err := p.Percent(0)
 		if err != nil {
 			cpuUsage = 0.0
+		}
+
+		// Cumulative CPU seconds (user+system) — feeds the _total counter.
+		var cpuSeconds float64
+		if times, err := p.Times(); err == nil && times != nil {
+			cpuSeconds = times.User + times.System
 		}
 
 		// Memory RSS and VMS
@@ -333,6 +364,7 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 			CmdLine:    cmdline,
 			Environ:    environMap,
 			CPUUsage:   cpuUsage,
+			CPUSeconds: cpuSeconds,
 			MemoryRSS:  rss,
 			MemoryVMS:  vms,
 			IORead:     ioRead,

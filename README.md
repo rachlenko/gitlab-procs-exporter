@@ -29,7 +29,7 @@ To solve this, before the pipeline runner forcefully terminates the job, the wor
 ## Features
 
 *   **Sliding 10-Minute History Store**: Caches metrics and metadata (even for processes that have exited) for exactly 10 minutes, solving a major blind spot in transient process tracking.
-*   **Security Redaction Engine**: Automatically redacts environment variable values containing sensitive terms like `key`, `pass`, `token`, `secret`, `url`, `api`, etc., before exposing them to metrics.
+*   **Security Redaction Engine**: Automatically redacts environment variable values containing sensitive terms like `key`, `pass`, `token`, `secret`, `url`, `api`, etc., before exposing them — both on the `/metrics` endpoint and in the `/api/processes` / `/api/history` JSON responses.
 *   **Self-Contained Executable**: Embeds the frontend Single Page Application (SPA) dashboard within the compiled Go binary using the standard Go `embed` directive.
 *   **Cross-Platform Telemetry**: Utilizes `gopsutil` to parse `/proc` natively on Linux and system APIs on macOS.
 *   **`jobreport` CLI & `jobreport-web` UI**: A companion one-shot CLI ([`cmd/jobreport`](cmd/jobreport/README.md)) renders top-N process tables straight from Prometheus, and a single self-contained htmx web app ([`cmd/jobreport-web`](cmd/jobreport-web/README.md)) runs it from the browser against a chosen Prometheus URL, job id, and UTC time window.
@@ -135,7 +135,7 @@ labels `pid` (process id) and `name` (process comm).
 
 | Metric | Type | Unit | Meaning |
 |--------|------|------|---------|
-| `gitlab_process_cpu_seconds_total` | counter¹ | percent¹ | Per-process CPU usage as sampled by gopsutil. |
+| `gitlab_process_cpu_seconds_total` | counter | seconds | Cumulative user+system CPU time consumed by the process. |
 | `gitlab_process_resident_memory_bytes` | gauge | bytes | Resident set size (RSS). |
 | `gitlab_process_virtual_memory_bytes` | gauge | bytes | Virtual memory size (VMS). |
 | `gitlab_process_io_read_bytes_total` | counter | bytes | Cumulative bytes read from disk. |
@@ -144,7 +144,8 @@ labels `pid` (process id) and `name` (process comm).
 
 `gitlab_process_info` carries three extra labels beyond `pid`/`name`:
 
-- `cmdline` — the full process command line.
+- `cmdline` — the process command line, capped at 2048 bytes with a trailing
+  `[TRUNCATED]` marker (cut on a rune boundary) when longer.
 - `environ` — the process environment as a single `KEY=VALUE, KEY2=VALUE2`
   string, **sorted by key** (stable across scrapes). Secret-looking entries are
   rendered as `KEY=[REDACTED]` and the whole label is size-bounded (see
@@ -154,13 +155,6 @@ labels `pid` (process id) and `name` (process comm).
   more than 100 variables or the total-size ceiling was reached), otherwise
   `"0"`. It is **not** set by per-value `[REDACTED]` or `[TRUNCATED]`
   substitutions — those keep the variable present, so the list is still complete.
-
-¹ **Caveat on `gitlab_process_cpu_seconds_total`:** despite the `_total` /
-`seconds` name and the counter type, the exported value is the **instantaneous
-CPU usage percent** returned by `gopsutil` (`Process.Percent`), not a
-monotonically increasing seconds counter. Treat it as a percent gauge — do
-**not** apply `rate()` to it. The two `_io_*_total` counters, by contrast, are
-genuine cumulative counters and `rate()` works on them.
 
 Example exposition:
 
@@ -607,3 +601,20 @@ When the variable **list** is left incomplete — variables dropped because ther
 were more than 100 or because the byte ceiling was hit — the companion
 `environ_truncated` label is set to `"1"`. Per-value `[REDACTED]`/`[TRUNCATED]`
 substitutions keep the variable present and do **not** set that flag.
+
+The `cmdline` label is size-bounded the same way: it is capped at **2048
+bytes**, cut on a rune boundary with a trailing `[TRUNCATED]` marker, so a
+process with an enormous argv (`ARG_MAX` can reach 2 MB) can't bloat the scrape.
+
+Every label value sourced from `/proc` (`name`, `cmdline`, `environ`, and the
+`ci_job_*` values) is also **UTF-8-sanitized**: invalid bytes are replaced with
+the Unicode replacement character (U+FFFD). Without this a process carrying
+binary bytes in its name or environment would panic `MustNewConstMetric` on the
+registry's gather goroutine and crash the exporter, so you may occasionally see
+`` in these labels.
+
+**The JSON API applies the same secret redaction.** The `/api/processes` and
+`/api/history` responses run every `environ` value through the identical rules
+(built-in key denylist, operator `redact_key_substrings`, and value-shape
+heuristics) before encoding, so secrets are never returned raw on the JSON path
+either.

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,7 +63,7 @@ func TestServeAPIProcesses(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/processes", nil)
 	rr := httptest.NewRecorder()
 
-	serveAPIProcesses(rr, req, store)
+	serveAPIProcesses(rr, req, store, nil)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status code 200, got %d", rr.Code)
@@ -100,7 +103,7 @@ func TestServeAPIHistory(t *testing.T) {
 	req1 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history", nil)
 	rr1 := httptest.NewRecorder()
 
-	serveAPIHistory(rr1, req1, store)
+	serveAPIHistory(rr1, req1, store, nil)
 
 	if rr1.Code != http.StatusBadRequest {
 		t.Errorf("expected status code 400 for missing params, got %d", rr1.Code)
@@ -110,7 +113,7 @@ func TestServeAPIHistory(t *testing.T) {
 	req2 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history?pid=3333", nil)
 	rr2 := httptest.NewRecorder()
 
-	serveAPIHistory(rr2, req2, store)
+	serveAPIHistory(rr2, req2, store, nil)
 
 	if rr2.Code != http.StatusOK {
 		t.Fatalf("expected status code 200 for PID query, got %d", rr2.Code)
@@ -129,7 +132,7 @@ func TestServeAPIHistory(t *testing.T) {
 	req3 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history?name=sidekiq", nil)
 	rr3 := httptest.NewRecorder()
 
-	serveAPIHistory(rr3, req3, store)
+	serveAPIHistory(rr3, req3, store, nil)
 
 	if rr3.Code != http.StatusOK {
 		t.Fatalf("expected status code 200 for Name query, got %d", rr3.Code)
@@ -161,6 +164,56 @@ func TestScrape(t *testing.T) {
 			t.Error("expected process cache to be populated after scraping")
 		}
 	}
+
+	// The test process itself has burned CPU, so its sample must carry real
+	// cumulative CPUSeconds (user+system). This guards the scrape() → p.Times()
+	// wiring: the collector test only proves the collector emits whatever
+	// CPUSeconds it's handed, never that scrape() populates the field at all.
+	self := int32(os.Getpid()) //nolint:gosec // G115: a PID always fits in int32
+	found := false
+	for _, s := range active {
+		if s.PID == self {
+			found = true
+			if s.CPUSeconds <= 0 {
+				t.Errorf("scrape() must populate cumulative CPUSeconds for the running test process, got %v", s.CPUSeconds)
+			}
+		}
+	}
+	if len(active) > 0 && !found {
+		t.Log("warning: own PID not present among scraped processes; skipping CPUSeconds assertion")
+	}
+}
+
+// TestLiveProcessEvictsExitedPID exercises the eviction branch that is the
+// whole reason liveProcess exists: when a cached PID no longer belongs to a
+// live process, the stale *process.Process (carrying an obsolete CPU baseline
+// and create time) must be dropped so a PID-reuse newcomer never inherits it.
+func TestLiveProcessEvictsExitedPID(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start a child process on this host: %v", err)
+	}
+	pid := int32(cmd.Process.Pid) //nolint:gosec // G115: a PID always fits in int32
+	cache := make(map[int32]*process.Process)
+
+	stale, err := liveProcess(cache, pid)
+	if err != nil {
+		t.Fatalf("liveProcess failed while child was alive: %v", err)
+	}
+	if cache[pid] != stale {
+		t.Fatal("expected the live child to be cached")
+	}
+
+	// Kill and reap so the PID's cached object is now stale.
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
+	// liveProcess may return an error (PID gone) or a fresh object (PID reused),
+	// but in neither case may the stale cached object survive.
+	_, _ = liveProcess(cache, pid)
+	if cache[pid] == stale {
+		t.Error("stale cached *process.Process for an exited PID was not evicted")
+	}
 }
 
 func TestStartScraper(t *testing.T) {
@@ -174,4 +227,57 @@ func TestStartScraper(t *testing.T) {
 
 	// Check that we got active processes scraped
 	_ = store.GetActiveProcesses()
+}
+
+// TestServeAPIRedactsEnviron pins the security boundary: the JSON API must
+// never return raw secrets — scrubbing is not only for the Prometheus label.
+func TestServeAPIRedactsEnviron(t *testing.T) {
+	store := exporter.NewHistoryStore()
+	store.AddSample(exporter.ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        4444,
+		Name:       "runner",
+		Environ:    map[string]string{"DB_PASSWORD": "unsafe-pwd-here", "USER": "gitlab"}, //nolint:gosec // G101: fake secret to exercise redaction
+		CreateTime: 100,
+		IsActive:   true,
+	})
+
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/processes", nil)
+	rr := httptest.NewRecorder()
+	serveAPIProcesses(rr, req, store, nil)
+	body := rr.Body.String()
+	if strings.Contains(body, "unsafe-pwd-here") {
+		t.Errorf("/api/processes leaked a secret environ value: %s", body)
+	}
+	if !strings.Contains(body, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] in /api/processes response, got: %s", body)
+	}
+
+	req2 := httptest.NewRequestWithContext(context.Background(), "GET", "/api/history?pid=4444", nil)
+	rr2 := httptest.NewRecorder()
+	serveAPIHistory(rr2, req2, store, nil)
+	body2 := rr2.Body.String()
+	if strings.Contains(body2, "unsafe-pwd-here") {
+		t.Errorf("/api/history leaked a secret environ value: %s", body2)
+	}
+}
+
+func TestLiveProcessReusesCachedObject(t *testing.T) {
+	cache := make(map[int32]*process.Process)
+	self := int32(os.Getpid()) //nolint:gosec // G115: a PID always fits in int32
+
+	p1, err := liveProcess(cache, self)
+	if err != nil {
+		t.Fatalf("liveProcess failed for our own pid: %v", err)
+	}
+	p2, err := liveProcess(cache, self)
+	if err != nil {
+		t.Fatalf("liveProcess failed on second call: %v", err)
+	}
+	if p1 != p2 {
+		t.Error("expected the cached *process.Process to be reused for a still-running process (CPU Percent baselines live on it)")
+	}
+	if len(cache) != 1 {
+		t.Errorf("expected exactly 1 cache entry, got %d", len(cache))
+	}
 }
