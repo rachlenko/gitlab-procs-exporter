@@ -14,10 +14,10 @@ func writeTaskIO(t *testing.T, procRoot string, pid int32, threads map[string]st
 	t.Helper()
 	for tid, body := range threads {
 		dir := filepath.Join(procRoot, strconv.Itoa(int(pid)), "task", tid)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatalf("MkdirAll(%s): %v", dir, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "io"), []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "io"), []byte(body), 0o600); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
@@ -61,7 +61,7 @@ func TestSelfIOIgnoresReapedChildAccounting(t *testing.T) {
 	// SelfIO must not consult) claims terabytes inherited from reaped children.
 	writeTaskIO(t, root, 1, map[string]string{"1": procIOFile(26492928, 0)})
 	pidDir := filepath.Join(root, "1")
-	if err := os.WriteFile(filepath.Join(pidDir, "io"), []byte(procIOFile(1994568709120, 27786051437568)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(pidDir, "io"), []byte(procIOFile(1994568709120, 27786051437568)), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -83,7 +83,7 @@ func TestSelfIOSkipsThreadThatExitedMidWalk(t *testing.T) {
 	root := t.TempDir()
 	writeTaskIO(t, root, 7, map[string]string{"7": procIOFile(11, 22)})
 	gone := filepath.Join(root, "7", "task", "8")
-	if err := os.MkdirAll(gone, 0o755); err != nil {
+	if err := os.MkdirAll(gone, 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	} // no io file inside
 
@@ -98,7 +98,7 @@ func TestSelfIOSkipsThreadThatExitedMidWalk(t *testing.T) {
 
 func TestSelfIOReportsNoLiveTask(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "9", "task", "9"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "9", "task", "9"), 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestSelfIOUnreadableThreadIsAnError(t *testing.T) {
 	if err := os.Chmod(locked, 0o000); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o644) })
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
 
 	if _, _, err := SelfIO(root, 3); !errors.Is(err, os.ErrPermission) {
 		t.Errorf("err = %v, want os.ErrPermission", err)
