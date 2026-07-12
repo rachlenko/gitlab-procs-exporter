@@ -19,10 +19,13 @@ type ProcessSample struct {
 	CPUSeconds float64           `json:"cpu_seconds"`    // Cumulative user+system CPU seconds
 	MemoryRSS  uint64            `json:"memory_rss"`     // RSS in bytes
 	MemoryVMS  uint64            `json:"memory_vms"`     // Virtual memory in bytes
-	IORead     uint64            `json:"io_read_bytes"`  // Cumulative bytes read
-	IOWrite    uint64            `json:"io_write_bytes"` // Cumulative bytes written
-	CreateTime int64             `json:"create_time"`    // Process start time (epoch milliseconds)
-	IsActive   bool              `json:"is_active"`      // Whether the process is currently running
+	IORead     uint64            `json:"io_read_bytes"`  // Cumulative bytes read, including by reaped children
+	IOWrite    uint64            `json:"io_write_bytes"` // Cumulative bytes written, including by reaped children
+	// IOReadSelf and IOWriteSelf count only this process's own threads; see SelfIO.
+	IOReadSelf  uint64 `json:"io_read_bytes_self"`
+	IOWriteSelf uint64 `json:"io_write_bytes_self"`
+	CreateTime  int64  `json:"create_time"` // Process start time (epoch milliseconds)
+	IsActive    bool   `json:"is_active"`   // Whether the process is currently running
 }
 
 // HistoryStore maintains process telemetry history for the last 10 minutes.

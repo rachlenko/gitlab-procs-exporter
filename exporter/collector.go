@@ -50,12 +50,14 @@ type ProcessCollector struct {
 	extraKeySubstrings []string
 
 	// Metric Descriptors
-	cpuDesc     *prometheus.Desc
-	rssDesc     *prometheus.Desc
-	vmsDesc     *prometheus.Desc
-	ioReadDesc  *prometheus.Desc
-	ioWriteDesc *prometheus.Desc
-	infoDesc    *prometheus.Desc
+	cpuDesc         *prometheus.Desc
+	rssDesc         *prometheus.Desc
+	vmsDesc         *prometheus.Desc
+	ioReadDesc      *prometheus.Desc
+	ioWriteDesc     *prometheus.Desc
+	ioReadSelfDesc  *prometheus.Desc
+	ioWriteSelfDesc *prometheus.Desc
+	infoDesc        *prometheus.Desc
 }
 
 // NewProcessCollector creates and initializes a ProcessCollector.
@@ -82,12 +84,30 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 		),
 		ioReadDesc: prometheus.NewDesc(
 			"gitlab_process_io_read_bytes_total",
-			"Total bytes read from disk.",
+			"Total bytes read from disk by the process AND by every descendant it has reaped. "+
+				"Reapers (pid 1, job shells) therefore report I/O they never issued; use "+
+				"gitlab_process_self_io_read_bytes_total to attribute bytes to the process that issued them.",
 			commonLabels, nil,
 		),
 		ioWriteDesc: prometheus.NewDesc(
 			"gitlab_process_io_write_bytes_total",
-			"Total bytes written to disk.",
+			"Total bytes written to disk by the process AND by every descendant it has reaped. "+
+				"Reapers (pid 1, job shells) therefore report I/O they never issued; use "+
+				"gitlab_process_self_io_write_bytes_total to attribute bytes to the process that issued them.",
+			commonLabels, nil,
+		),
+		ioReadSelfDesc: prometheus.NewDesc(
+			"gitlab_process_self_io_read_bytes_total",
+			"Bytes read from disk by the process's own threads, excluding anything it merely reaped. "+
+				"Bytes read by an already-exited child are counted by neither this metric nor any "+
+				"other series, so summing it across processes understates the node total.",
+			commonLabels, nil,
+		),
+		ioWriteSelfDesc: prometheus.NewDesc(
+			"gitlab_process_self_io_write_bytes_total",
+			"Bytes written to disk by the process's own threads, excluding anything it merely reaped. "+
+				"Bytes written by an already-exited child are counted by neither this metric nor any "+
+				"other series, so summing it across processes understates the node total.",
 			commonLabels, nil,
 		),
 		infoDesc: prometheus.NewDesc(
@@ -249,6 +269,8 @@ func (pc *ProcessCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- pc.vmsDesc
 	ch <- pc.ioReadDesc
 	ch <- pc.ioWriteDesc
+	ch <- pc.ioReadSelfDesc
+	ch <- pc.ioWriteSelfDesc
 	ch <- pc.infoDesc
 }
 
@@ -268,6 +290,8 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(pc.vmsDesc, prometheus.GaugeValue, float64(p.MemoryVMS), labels...)
 		ch <- prometheus.MustNewConstMetric(pc.ioReadDesc, prometheus.CounterValue, float64(p.IORead), labels...)
 		ch <- prometheus.MustNewConstMetric(pc.ioWriteDesc, prometheus.CounterValue, float64(p.IOWrite), labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioReadSelfDesc, prometheus.CounterValue, float64(p.IOReadSelf), labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioWriteSelfDesc, prometheus.CounterValue, float64(p.IOWriteSelf), labels...)
 
 		// Emit metadata info metric (environ scrubbed for secrets and bounded)
 		environ, environTruncated := pc.scrubEnviron(p.Environ)

@@ -276,12 +276,14 @@ func report(c *promClient, proc, node string, start, end int64, topN int) error 
 		return num(r.Val/1048576, 1) + " MiB"
 	}, "peak RSS", 70))
 
-	// 3) IO (read+write)
-	io, err := c.topN(fmt.Sprintf("increase(gitlab_process_io_read_bytes_total%s[%ds]) + increase(gitlab_process_io_write_bytes_total%s[%ds])", F, W, F, W), topN, end, meta)
+	// 3) IO (read+write). The self_ series credit the process that issued the
+	// I/O; the process-wide counters would rank the job's shell first, since a
+	// parent absorbs the accounting of each child it reaps.
+	io, err := c.topN(fmt.Sprintf("increase(gitlab_process_self_io_read_bytes_total%s[%ds]) + increase(gitlab_process_self_io_write_bytes_total%s[%ds])", F, W, F, W), topN, end, meta)
 	if err != nil {
 		return err
 	}
-	fmt.Println("\nBy I/O (total read+write):")
+	fmt.Println("\nBy I/O (total read+write, excluding reaped children):")
 	fmt.Print(renderRows(io, "cmdline / job", func(r topRow) string {
 		return num(r.Val/1048576, 0) + " MiB"
 	}, "total IO", 52))

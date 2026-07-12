@@ -138,9 +138,36 @@ labels `pid` (process id) and `name` (process comm).
 | `gitlab_process_cpu_seconds_total` | counter | seconds | Cumulative user+system CPU time consumed by the process. |
 | `gitlab_process_resident_memory_bytes` | gauge | bytes | Resident set size (RSS). |
 | `gitlab_process_virtual_memory_bytes` | gauge | bytes | Virtual memory size (VMS). |
-| `gitlab_process_io_read_bytes_total` | counter | bytes | Cumulative bytes read from disk. |
-| `gitlab_process_io_write_bytes_total` | counter | bytes | Cumulative bytes written to disk. |
+| `gitlab_process_io_read_bytes_total` | counter | bytes | Bytes read from disk by the process **and every descendant it has reaped**. |
+| `gitlab_process_io_write_bytes_total` | counter | bytes | Bytes written to disk by the process **and every descendant it has reaped**. |
+| `gitlab_process_self_io_read_bytes_total` | counter | bytes | Bytes read from disk by the process's own threads. |
+| `gitlab_process_self_io_write_bytes_total` | counter | bytes | Bytes written to disk by the process's own threads. |
 | `gitlab_process_info` | gauge | `1` | Metadata-only series; the value is always `1` and the data lives in its labels. |
+
+#### Which I/O metric to use
+
+Linux folds a child's I/O accounting into its parent when the parent reaps it,
+and the fold is recursive. `/proc/<pid>/io` — the source of the two
+`gitlab_process_io_*` counters — therefore reports, for any long-lived reaper,
+the I/O of every process that ever exited beneath it. On a CI node `pid 1` and
+the job shells top a `topk()` over write bytes while never having touched the
+disk; summing the counter across processes double-counts, because bytes sit in
+a live child's counter and, once it exits, in its parent's too.
+
+The `gitlab_process_self_io_*` counters sum `/proc/<pid>/task/<tid>/io` over the
+live threads instead, which carries no such inheritance. Use them to answer
+**who is doing the I/O**:
+
+```promql
+topk(10, sum by (name) (rate(gitlab_process_self_io_write_bytes_total[5m])))
+```
+
+Their blind spot is the mirror image: a process that lives and dies between two
+scrapes is never sampled, and the bytes it wrote appear in no `self_` series at
+all. On a busy CI node that can be most of the traffic. So for **how much I/O
+happened in total** — a whole job, a whole node — keep using the process-wide
+counter on the root of the tree (the job's shell, or `pid 1`), which by then has
+absorbed everything below it. Never `sum()` either family across a process tree.
 
 `gitlab_process_info` carries three extra labels beyond `pid`/`name`:
 
@@ -232,8 +259,8 @@ You can execute these queries in the Prometheus Web UI or Grafana to query the l
 | **CPU Usage** | `rate(gitlab_process_cpu_seconds_total{pid="CI_JOB_ID", name="CI_JOB_NAME"}[10m])` | Cores utilized |
 | **Memory (RSS)** | `gitlab_process_resident_memory_bytes{pid="CI_JOB_ID", name="CI_JOB_NAME"}[10m]` | Bytes |
 | **Memory (VMS)** | `gitlab_process_virtual_memory_bytes{pid="CI_JOB_ID", name="CI_JOB_NAME"}[10m]` | Bytes |
-| **Disk Read Rate** | `rate(gitlab_process_io_read_bytes_total{pid="CI_JOB_ID", name="CI_JOB_NAME"}[10m])` | Bytes / Sec |
-| **Disk Write Rate**| `rate(gitlab_process_io_write_bytes_total{pid="CI_JOB_ID", name="CI_JOB_NAME"}[10m])` | Bytes / Sec |
+| **Disk Read Rate** | `rate(gitlab_process_self_io_read_bytes_total{pid="CI_JOB_ID", name="CI_JOB_NAME"}[10m])` | Bytes / Sec |
+| **Disk Write Rate**| `rate(gitlab_process_self_io_write_bytes_total{pid="CI_JOB_ID", name="CI_JOB_NAME"}[10m])` | Bytes / Sec |
 
 ### Querying the Prometheus HTTP API via `curl`
 
@@ -278,9 +305,11 @@ groups:
           summary: "Process {{ $labels.name }} (PID: {{ $labels.pid }}) exceeded 4GB RAM"
           description: "Process {{ $labels.name }} has a Resident Set Size (RSS) of {{ $value | humanize1024Bytes }}."
 
-      # 3. Alert if a process experiences heavy Disk I/O load (exceeding 100MB/s)
+      # 3. Alert if a process experiences heavy Disk I/O load (exceeding 100MB/s).
+      #    The self_ series are required here: the process-wide counters would
+      #    page on pid 1, which inherits the I/O of everything it reaps.
       - alert: ExtremeProcessDiskIO
-        expr: (rate(gitlab_process_io_read_bytes_total[1m]) + rate(gitlab_process_io_write_bytes_total[1m])) > 104857600
+        expr: (rate(gitlab_process_self_io_read_bytes_total[1m]) + rate(gitlab_process_self_io_write_bytes_total[1m])) > 104857600
         for: 1m
         labels:
           severity: warning

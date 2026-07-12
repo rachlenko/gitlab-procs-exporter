@@ -327,12 +327,20 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 			vms = memInfo.VMS
 		}
 
-		// I/O Counters
+		// I/O Counters. IOCounters reads /proc/<pid>/io, which also carries the
+		// accounting of every child this process has reaped; SelfIO sums the
+		// per-thread files instead and so credits only the issuing process.
+		// Both are exported — neither is the whole truth on its own.
 		var ioRead, ioWrite uint64
 		ioCounters, err := p.IOCounters()
 		if err == nil && ioCounters != nil {
 			ioRead = ioCounters.ReadBytes
 			ioWrite = ioCounters.WriteBytes
+		}
+
+		var ioReadSelf, ioWriteSelf uint64
+		if r, w, err := exporter.SelfIO("/proc", pid); err == nil {
+			ioReadSelf, ioWriteSelf = r, w
 		}
 
 		// Environment variables
@@ -357,20 +365,22 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 
 		// Add sample to HistoryStore
 		store.AddSample(exporter.ProcessSample{
-			Timestamp:  now,
-			PID:        pid,
-			Name:       name,
-			PodUID:     podUID,
-			CmdLine:    cmdline,
-			Environ:    environMap,
-			CPUUsage:   cpuUsage,
-			CPUSeconds: cpuSeconds,
-			MemoryRSS:  rss,
-			MemoryVMS:  vms,
-			IORead:     ioRead,
-			IOWrite:    ioWrite,
-			CreateTime: createTime,
-			IsActive:   true,
+			Timestamp:   now,
+			PID:         pid,
+			Name:        name,
+			PodUID:      podUID,
+			CmdLine:     cmdline,
+			Environ:     environMap,
+			CPUUsage:    cpuUsage,
+			CPUSeconds:  cpuSeconds,
+			MemoryRSS:   rss,
+			MemoryVMS:   vms,
+			IORead:      ioRead,
+			IOWrite:     ioWrite,
+			IOReadSelf:  ioReadSelf,
+			IOWriteSelf: ioWriteSelf,
+			CreateTime:  createTime,
+			IsActive:    true,
 		})
 	}
 
