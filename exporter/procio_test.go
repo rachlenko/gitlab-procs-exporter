@@ -24,56 +24,53 @@ func writeTaskIO(t *testing.T, procRoot string, pid int32, threads map[string]st
 }
 
 // procIOFile renders a realistic /proc/<pid>/task/<tid>/io body.
-func procIOFile(readBytes, writeBytes uint64) string {
+func procIOFile(st IOStats) string {
+	u := strconv.FormatUint
 	return "rchar: 100\n" +
 		"wchar: 200\n" +
-		"syscr: 3\n" +
-		"syscw: 4\n" +
-		"read_bytes: " + strconv.FormatUint(readBytes, 10) + "\n" +
-		"write_bytes: " + strconv.FormatUint(writeBytes, 10) + "\n" +
+		"syscr: " + u(st.ReadSyscalls, 10) + "\n" +
+		"syscw: " + u(st.WriteSyscalls, 10) + "\n" +
+		"read_bytes: " + u(st.ReadBytes, 10) + "\n" +
+		"write_bytes: " + u(st.WriteBytes, 10) + "\n" +
 		"cancelled_write_bytes: 0\n"
 }
 
 func TestSelfIOSumsLiveThreads(t *testing.T) {
 	root := t.TempDir()
 	writeTaskIO(t, root, 42, map[string]string{
-		"42": procIOFile(1000, 2000),
-		"57": procIOFile(30, 4000),
+		"42": procIOFile(IOStats{ReadBytes: 1000, WriteBytes: 2000, ReadSyscalls: 7, WriteSyscalls: 11}),
+		"57": procIOFile(IOStats{ReadBytes: 30, WriteBytes: 4000, ReadSyscalls: 3, WriteSyscalls: 4}),
 	})
 
-	read, write, err := SelfIO(root, 42)
+	got, err := SelfIO(root, 42)
 	if err != nil {
 		t.Fatalf("SelfIO: %v", err)
 	}
-	if read != 1030 {
-		t.Errorf("read = %d, want 1030", read)
-	}
-	if write != 6000 {
-		t.Errorf("write = %d, want 6000", write)
+	want := IOStats{ReadBytes: 1030, WriteBytes: 6000, ReadSyscalls: 10, WriteSyscalls: 15}
+	if got != want {
+		t.Errorf("SelfIO = %+v, want %+v", got, want)
 	}
 }
 
 // The whole point of the function: a reaper's per-thread total must not include
-// the bytes the kernel folded into /proc/<pid>/io when it reaped a child.
+// the accounting the kernel folded into /proc/<pid>/io when it reaped a child.
 func TestSelfIOIgnoresReapedChildAccounting(t *testing.T) {
 	root := t.TempDir()
 	// pid 1 has one thread that has never written; the process-wide file (which
 	// SelfIO must not consult) claims terabytes inherited from reaped children.
-	writeTaskIO(t, root, 1, map[string]string{"1": procIOFile(26492928, 0)})
-	pidDir := filepath.Join(root, "1")
-	if err := os.WriteFile(filepath.Join(pidDir, "io"), []byte(procIOFile(1994568709120, 27786051437568)), 0o600); err != nil {
+	own := IOStats{ReadBytes: 26492928, WriteBytes: 0, ReadSyscalls: 4211, WriteSyscalls: 0}
+	writeTaskIO(t, root, 1, map[string]string{"1": procIOFile(own)})
+	reaped := IOStats{ReadBytes: 1994568709120, WriteBytes: 27786051437568, ReadSyscalls: 20912506972, WriteSyscalls: 17180756343}
+	if err := os.WriteFile(filepath.Join(root, "1", "io"), []byte(procIOFile(reaped)), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	read, write, err := SelfIO(root, 1)
+	got, err := SelfIO(root, 1)
 	if err != nil {
 		t.Fatalf("SelfIO: %v", err)
 	}
-	if read != 26492928 {
-		t.Errorf("read = %d, want 26492928 (own thread only)", read)
-	}
-	if write != 0 {
-		t.Errorf("write = %d, want 0: systemd issued no writes of its own", write)
+	if got != own {
+		t.Errorf("SelfIO = %+v, want %+v: systemd issued no writes of its own", got, own)
 	}
 }
 
@@ -81,18 +78,18 @@ func TestSelfIOIgnoresReapedChildAccounting(t *testing.T) {
 // a busy node; it must not fail the scrape for the whole process.
 func TestSelfIOSkipsThreadThatExitedMidWalk(t *testing.T) {
 	root := t.TempDir()
-	writeTaskIO(t, root, 7, map[string]string{"7": procIOFile(11, 22)})
-	gone := filepath.Join(root, "7", "task", "8")
-	if err := os.MkdirAll(gone, 0o750); err != nil {
+	live := IOStats{ReadBytes: 11, WriteBytes: 22, ReadSyscalls: 1, WriteSyscalls: 2}
+	writeTaskIO(t, root, 7, map[string]string{"7": procIOFile(live)})
+	if err := os.MkdirAll(filepath.Join(root, "7", "task", "8"), 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	} // no io file inside
 
-	read, write, err := SelfIO(root, 7)
+	got, err := SelfIO(root, 7)
 	if err != nil {
 		t.Fatalf("SelfIO: %v", err)
 	}
-	if read != 11 || write != 22 {
-		t.Errorf("got read=%d write=%d, want 11/22", read, write)
+	if got != live {
+		t.Errorf("SelfIO = %+v, want %+v", got, live)
 	}
 }
 
@@ -102,13 +99,13 @@ func TestSelfIOReportsNoLiveTask(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	if _, _, err := SelfIO(root, 9); !errors.Is(err, ErrNoLiveTask) {
+	if _, err := SelfIO(root, 9); !errors.Is(err, ErrNoLiveTask) {
 		t.Errorf("err = %v, want ErrNoLiveTask", err)
 	}
 }
 
 func TestSelfIOMissingProcess(t *testing.T) {
-	if _, _, err := SelfIO(t.TempDir(), 12345); !errors.Is(err, os.ErrNotExist) {
+	if _, err := SelfIO(t.TempDir(), 12345); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("err = %v, want os.ErrNotExist", err)
 	}
 }
@@ -124,8 +121,8 @@ func TestSelfIOUnreadableThreadIsAnError(t *testing.T) {
 	}
 	root := t.TempDir()
 	writeTaskIO(t, root, 3, map[string]string{
-		"3": procIOFile(1, 1),
-		"4": procIOFile(2, 2),
+		"3": procIOFile(IOStats{ReadBytes: 1, WriteBytes: 1}),
+		"4": procIOFile(IOStats{ReadBytes: 2, WriteBytes: 2}),
 	})
 	locked := filepath.Join(root, "3", "task", "4", "io")
 	if err := os.Chmod(locked, 0o000); err != nil {
@@ -133,7 +130,7 @@ func TestSelfIOUnreadableThreadIsAnError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
 
-	if _, _, err := SelfIO(root, 3); !errors.Is(err, os.ErrPermission) {
+	if _, err := SelfIO(root, 3); !errors.Is(err, os.ErrPermission) {
 		t.Errorf("err = %v, want os.ErrPermission", err)
 	}
 }
@@ -142,7 +139,7 @@ func TestParseProcIOMalformedValue(t *testing.T) {
 	root := t.TempDir()
 	writeTaskIO(t, root, 5, map[string]string{"5": "read_bytes: nonsense\n"})
 
-	if _, _, err := SelfIO(root, 5); err == nil {
+	if _, err := SelfIO(root, 5); err == nil {
 		t.Fatal("want an error on an unparseable counter, got nil")
 	}
 }
@@ -151,14 +148,15 @@ func TestParseProcIOMalformedValue(t *testing.T) {
 func TestParseProcIOToleratesUnknownKeys(t *testing.T) {
 	root := t.TempDir()
 	writeTaskIO(t, root, 6, map[string]string{
-		"6": "some_future_field: 9\nread_bytes: 5\nwrite_bytes: 6\n\n",
+		"6": "some_future_field: 9\nread_bytes: 5\nwrite_bytes: 6\nsyscr: 2\nsyscw: 3\n\n",
 	})
 
-	read, write, err := SelfIO(root, 6)
+	got, err := SelfIO(root, 6)
 	if err != nil {
 		t.Fatalf("SelfIO: %v", err)
 	}
-	if read != 5 || write != 6 {
-		t.Errorf("got read=%d write=%d, want 5/6", read, write)
+	want := IOStats{ReadBytes: 5, WriteBytes: 6, ReadSyscalls: 2, WriteSyscalls: 3}
+	if got != want {
+		t.Errorf("SelfIO = %+v, want %+v", got, want)
 	}
 }

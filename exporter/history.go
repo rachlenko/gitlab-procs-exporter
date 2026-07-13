@@ -21,11 +21,18 @@ type ProcessSample struct {
 	MemoryVMS  uint64            `json:"memory_vms"`     // Virtual memory in bytes
 	IORead     uint64            `json:"io_read_bytes"`  // Cumulative bytes read, including by reaped children
 	IOWrite    uint64            `json:"io_write_bytes"` // Cumulative bytes written, including by reaped children
-	// IOReadSelf and IOWriteSelf count only this process's own threads; see SelfIO.
-	IOReadSelf  uint64 `json:"io_read_bytes_self"`
-	IOWriteSelf uint64 `json:"io_write_bytes_self"`
-	CreateTime  int64  `json:"create_time"` // Process start time (epoch milliseconds)
-	IsActive    bool   `json:"is_active"`   // Whether the process is currently running
+	// IOReadSyscalls and IOWriteSyscalls are read(2)/write(2) call counts — not
+	// device IOPS; see IOStats. Like the byte counters above, they include every
+	// descendant this process has reaped.
+	IOReadSyscalls  uint64 `json:"io_read_syscalls"`
+	IOWriteSyscalls uint64 `json:"io_write_syscalls"`
+	// The Self* counters cover only this process's own threads; see SelfIO.
+	IOReadSelf          uint64 `json:"io_read_bytes_self"`
+	IOWriteSelf         uint64 `json:"io_write_bytes_self"`
+	IOReadSyscallsSelf  uint64 `json:"io_read_syscalls_self"`
+	IOWriteSyscallsSelf uint64 `json:"io_write_syscalls_self"`
+	CreateTime          int64  `json:"create_time"` // Process start time (epoch milliseconds)
+	IsActive            bool   `json:"is_active"`   // Whether the process is currently running
 }
 
 // HistoryStore maintains process telemetry history for the last 10 minutes.

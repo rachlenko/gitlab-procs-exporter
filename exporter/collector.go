@@ -50,15 +50,25 @@ type ProcessCollector struct {
 	extraKeySubstrings []string
 
 	// Metric Descriptors
-	cpuDesc         *prometheus.Desc
-	rssDesc         *prometheus.Desc
-	vmsDesc         *prometheus.Desc
-	ioReadDesc      *prometheus.Desc
-	ioWriteDesc     *prometheus.Desc
-	ioReadSelfDesc  *prometheus.Desc
-	ioWriteSelfDesc *prometheus.Desc
-	infoDesc        *prometheus.Desc
+	cpuDesc                 *prometheus.Desc
+	rssDesc                 *prometheus.Desc
+	vmsDesc                 *prometheus.Desc
+	ioReadDesc              *prometheus.Desc
+	ioWriteDesc             *prometheus.Desc
+	ioReadSelfDesc          *prometheus.Desc
+	ioWriteSelfDesc         *prometheus.Desc
+	ioReadSyscallsDesc      *prometheus.Desc
+	ioWriteSyscallsDesc     *prometheus.Desc
+	ioReadSyscallsSelfDesc  *prometheus.Desc
+	ioWriteSyscallsSelfDesc *prometheus.Desc
+	infoDesc                *prometheus.Desc
 }
+
+// syscallHelp explains, once, that these counters are syscalls and not IOPS.
+// A panel titled "IOPS" built on them would be quietly wrong, so say it here.
+const syscallHelp = " These are read(2)/write(2) call counts, NOT block-device IOPS: the page cache " +
+	"merges and splits them on the way to the disk, and the kernel does not attribute block operations " +
+	"back to the process that dirtied the page. Use node_disk_*_completed_total for true device IOPS."
 
 // NewProcessCollector creates and initializes a ProcessCollector.
 func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *ProcessCollector {
@@ -108,6 +118,26 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 			"Bytes written to disk by the process's own threads, excluding anything it merely reaped. "+
 				"Bytes written by an already-exited child are counted by neither this metric nor any "+
 				"other series, so summing it across processes understates the node total.",
+			commonLabels, nil,
+		),
+		ioReadSyscallsDesc: prometheus.NewDesc(
+			"gitlab_process_io_read_syscalls_total",
+			"Read syscalls issued by the process AND by every descendant it has reaped."+syscallHelp,
+			commonLabels, nil,
+		),
+		ioWriteSyscallsDesc: prometheus.NewDesc(
+			"gitlab_process_io_write_syscalls_total",
+			"Write syscalls issued by the process AND by every descendant it has reaped."+syscallHelp,
+			commonLabels, nil,
+		),
+		ioReadSyscallsSelfDesc: prometheus.NewDesc(
+			"gitlab_process_self_io_read_syscalls_total",
+			"Read syscalls issued by the process's own threads, excluding anything it merely reaped."+syscallHelp,
+			commonLabels, nil,
+		),
+		ioWriteSyscallsSelfDesc: prometheus.NewDesc(
+			"gitlab_process_self_io_write_syscalls_total",
+			"Write syscalls issued by the process's own threads, excluding anything it merely reaped."+syscallHelp,
 			commonLabels, nil,
 		),
 		infoDesc: prometheus.NewDesc(
@@ -271,6 +301,10 @@ func (pc *ProcessCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- pc.ioWriteDesc
 	ch <- pc.ioReadSelfDesc
 	ch <- pc.ioWriteSelfDesc
+	ch <- pc.ioReadSyscallsDesc
+	ch <- pc.ioWriteSyscallsDesc
+	ch <- pc.ioReadSyscallsSelfDesc
+	ch <- pc.ioWriteSyscallsSelfDesc
 	ch <- pc.infoDesc
 }
 
@@ -292,6 +326,10 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(pc.ioWriteDesc, prometheus.CounterValue, float64(p.IOWrite), labels...)
 		ch <- prometheus.MustNewConstMetric(pc.ioReadSelfDesc, prometheus.CounterValue, float64(p.IOReadSelf), labels...)
 		ch <- prometheus.MustNewConstMetric(pc.ioWriteSelfDesc, prometheus.CounterValue, float64(p.IOWriteSelf), labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioReadSyscallsDesc, prometheus.CounterValue, float64(p.IOReadSyscalls), labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioWriteSyscallsDesc, prometheus.CounterValue, float64(p.IOWriteSyscalls), labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioReadSyscallsSelfDesc, prometheus.CounterValue, float64(p.IOReadSyscallsSelf), labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioWriteSyscallsSelfDesc, prometheus.CounterValue, float64(p.IOWriteSyscallsSelf), labels...)
 
 		// Emit metadata info metric (environ scrubbed for secrets and bounded)
 		environ, environTruncated := pc.scrubEnviron(p.Environ)

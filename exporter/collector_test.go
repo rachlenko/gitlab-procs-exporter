@@ -40,28 +40,32 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 
 	// Add an active process with normal and secret environment variables
 	sample := ProcessSample{
-		Timestamp:   now,
-		PID:         4567,
-		Name:        "sidekiq-worker",
-		CmdLine:     "sidekiq -c 10",
-		Environ:     map[string]string{"DB_PASSWORD": "unsafe-pwd-here", "USER": "gitlab"}, //nolint:gosec // G101: fake secret to exercise redaction
-		CPUUsage:    45.2,
-		CPUSeconds:  123.5,
-		MemoryRSS:   200 * 1024 * 1024,
-		MemoryVMS:   400 * 1024 * 1024,
-		IORead:      15000,
-		IOWrite:     9500,
-		IOReadSelf:  15000,
-		IOWriteSelf: 9500,
-		CreateTime:  200,
-		IsActive:    true,
+		Timestamp:           now,
+		PID:                 4567,
+		Name:                "sidekiq-worker",
+		CmdLine:             "sidekiq -c 10",
+		Environ:             map[string]string{"DB_PASSWORD": "unsafe-pwd-here", "USER": "gitlab"}, //nolint:gosec // G101: fake secret to exercise redaction
+		CPUUsage:            45.2,
+		CPUSeconds:          123.5,
+		MemoryRSS:           200 * 1024 * 1024,
+		MemoryVMS:           400 * 1024 * 1024,
+		IORead:              15000,
+		IOWrite:             9500,
+		IOReadSyscalls:      120,
+		IOWriteSyscalls:     80,
+		IOReadSelf:          15000,
+		IOWriteSelf:         9500,
+		IOReadSyscallsSelf:  120,
+		IOWriteSyscallsSelf: 80,
+		CreateTime:          200,
+		IsActive:            true,
 	}
 	store.AddSample(sample)
 
 	collector := NewProcessCollector(store)
 
 	// Test Describe
-	descChan := make(chan *prometheus.Desc, 16)
+	descChan := make(chan *prometheus.Desc, 24)
 	collector.Describe(descChan)
 	close(descChan)
 
@@ -69,12 +73,12 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 	for range descChan {
 		descCount++
 	}
-	if descCount != 8 {
-		t.Errorf("expected 8 metric descriptors, got %d", descCount)
+	if descCount != 12 {
+		t.Errorf("expected 12 metric descriptors, got %d", descCount)
 	}
 
 	// Test Collect
-	metricChan := make(chan prometheus.Metric, 16)
+	metricChan := make(chan prometheus.Metric, 24)
 	collector.Collect(metricChan)
 	close(metricChan)
 
@@ -100,8 +104,8 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 		}
 	}
 
-	if metricCount != 8 {
-		t.Errorf("expected 8 active process metrics emitted, got %d", metricCount)
+	if metricCount != 12 {
+		t.Errorf("expected 12 active process metrics emitted, got %d", metricCount)
 	}
 
 	// Guard against the value assertion above silently no-op'ing: if the counter
@@ -475,15 +479,19 @@ func TestBoundCmdline(t *testing.T) {
 func TestCollectSeparatesReapedIOFromSelfIO(t *testing.T) {
 	store := NewHistoryStore()
 	store.AddSample(ProcessSample{
-		Timestamp:   time.Now(),
-		PID:         1,
-		Name:        "systemd",
-		IORead:      1994568709120,
-		IOWrite:     27786051437568, // inherited from every process ever reaped
-		IOReadSelf:  26492928,
-		IOWriteSelf: 0, // systemd itself never wrote a byte
-		CreateTime:  1,
-		IsActive:    true,
+		Timestamp:           time.Now(),
+		PID:                 1,
+		Name:                "systemd",
+		IORead:              1994568709120,
+		IOWrite:             27786051437568, // inherited from every process ever reaped
+		IOReadSyscalls:      20912506972,
+		IOWriteSyscalls:     17180756343, // likewise inherited
+		IOReadSelf:          26492928,
+		IOWriteSelf:         0, // systemd itself never wrote a byte
+		IOReadSyscallsSelf:  4211,
+		IOWriteSyscallsSelf: 0,
+		CreateTime:          1,
+		IsActive:            true,
 	})
 
 	reg := prometheus.NewRegistry()
@@ -504,10 +512,14 @@ func TestCollectSeparatesReapedIOFromSelfIO(t *testing.T) {
 	}
 
 	want := map[string]float64{
-		"gitlab_process_io_write_bytes_total":      27786051437568,
-		"gitlab_process_self_io_write_bytes_total": 0,
-		"gitlab_process_io_read_bytes_total":       1994568709120,
-		"gitlab_process_self_io_read_bytes_total":  26492928,
+		"gitlab_process_io_write_bytes_total":         27786051437568,
+		"gitlab_process_self_io_write_bytes_total":    0,
+		"gitlab_process_io_read_bytes_total":          1994568709120,
+		"gitlab_process_self_io_read_bytes_total":     26492928,
+		"gitlab_process_io_write_syscalls_total":      17180756343,
+		"gitlab_process_self_io_write_syscalls_total": 0,
+		"gitlab_process_io_read_syscalls_total":       20912506972,
+		"gitlab_process_self_io_read_syscalls_total":  4211,
 	}
 	for name, wantVal := range want {
 		if v, ok := got[name]; !ok {
