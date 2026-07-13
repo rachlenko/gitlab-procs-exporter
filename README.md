@@ -142,6 +142,10 @@ labels `pid` (process id) and `name` (process comm).
 | `gitlab_process_io_write_bytes_total` | counter | bytes | Bytes written to disk by the process **and every descendant it has reaped**. |
 | `gitlab_process_self_io_read_bytes_total` | counter | bytes | Bytes read from disk by the process's own threads. |
 | `gitlab_process_self_io_write_bytes_total` | counter | bytes | Bytes written to disk by the process's own threads. |
+| `gitlab_process_io_read_syscalls_total` | counter | syscalls | `read(2)` calls by the process **and every descendant it has reaped**. |
+| `gitlab_process_io_write_syscalls_total` | counter | syscalls | `write(2)` calls by the process **and every descendant it has reaped**. |
+| `gitlab_process_self_io_read_syscalls_total` | counter | syscalls | `read(2)` calls by the process's own threads. |
+| `gitlab_process_self_io_write_syscalls_total` | counter | syscalls | `write(2)` calls by the process's own threads. |
 | `gitlab_process_info` | gauge | `1` | Metadata-only series; the value is always `1` and the data lives in its labels. |
 
 #### Which I/O metric to use
@@ -168,6 +172,17 @@ all. On a busy CI node that can be most of the traffic. So for **how much I/O
 happened in total** — a whole job, a whole node — keep using the process-wide
 counter on the root of the tree (the job's shell, or `pid 1`), which by then has
 absorbed everything below it. Never `sum()` either family across a process tree.
+
+#### Syscalls are not IOPS
+
+`*_io_{read,write}_syscalls_total` expose `/proc`'s `syscr` / `syscw`: the number
+of `read(2)` and `write(2)` calls the process made. They are **not** block-device
+IOPS. The page cache merges and splits those calls on the way to the disk, and
+the kernel never attributes a block operation back to the process whose page it
+is flushing — a `write()` that returns instantly may cost the disk nothing now
+and one operation later, via `kworker`. Read them as a process's *I/O call rate*
+(chatty small reads vs. few large ones), and take true device IOPS from
+node-exporter's `node_disk_{reads,writes}_completed_total`.
 
 `gitlab_process_info` carries three extra labels beyond `pid`/`name`:
 

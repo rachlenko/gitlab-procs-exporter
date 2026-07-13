@@ -331,16 +331,18 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 		// accounting of every child this process has reaped; SelfIO sums the
 		// per-thread files instead and so credits only the issuing process.
 		// Both are exported — neither is the whole truth on its own.
-		var ioRead, ioWrite uint64
+		var ioRead, ioWrite, ioReadSyscalls, ioWriteSyscalls uint64
 		ioCounters, err := p.IOCounters()
 		if err == nil && ioCounters != nil {
 			ioRead = ioCounters.ReadBytes
 			ioWrite = ioCounters.WriteBytes
+			ioReadSyscalls = ioCounters.ReadCount   // /proc syscr
+			ioWriteSyscalls = ioCounters.WriteCount // /proc syscw
 		}
 
-		var ioReadSelf, ioWriteSelf uint64
-		if r, w, err := exporter.SelfIO("/proc", pid); err == nil {
-			ioReadSelf, ioWriteSelf = r, w
+		var self exporter.IOStats
+		if st, err := exporter.SelfIO("/proc", pid); err == nil {
+			self = st
 		}
 
 		// Environment variables
@@ -365,22 +367,26 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 
 		// Add sample to HistoryStore
 		store.AddSample(exporter.ProcessSample{
-			Timestamp:   now,
-			PID:         pid,
-			Name:        name,
-			PodUID:      podUID,
-			CmdLine:     cmdline,
-			Environ:     environMap,
-			CPUUsage:    cpuUsage,
-			CPUSeconds:  cpuSeconds,
-			MemoryRSS:   rss,
-			MemoryVMS:   vms,
-			IORead:      ioRead,
-			IOWrite:     ioWrite,
-			IOReadSelf:  ioReadSelf,
-			IOWriteSelf: ioWriteSelf,
-			CreateTime:  createTime,
-			IsActive:    true,
+			Timestamp:           now,
+			PID:                 pid,
+			Name:                name,
+			PodUID:              podUID,
+			CmdLine:             cmdline,
+			Environ:             environMap,
+			CPUUsage:            cpuUsage,
+			CPUSeconds:          cpuSeconds,
+			MemoryRSS:           rss,
+			MemoryVMS:           vms,
+			IORead:              ioRead,
+			IOWrite:             ioWrite,
+			IOReadSyscalls:      ioReadSyscalls,
+			IOWriteSyscalls:     ioWriteSyscalls,
+			IOReadSelf:          self.ReadBytes,
+			IOWriteSelf:         self.WriteBytes,
+			IOReadSyscallsSelf:  self.ReadSyscalls,
+			IOWriteSyscallsSelf: self.WriteSyscalls,
+			CreateTime:          createTime,
+			IsActive:            true,
 		})
 	}
 
