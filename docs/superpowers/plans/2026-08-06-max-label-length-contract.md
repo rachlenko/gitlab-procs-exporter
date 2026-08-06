@@ -137,14 +137,14 @@ series you can hash candidate values and confirm the match, which a bare
 This is the highest-value task: these five labels are on all 12 metrics and are
 currently unbounded.
 
-- [ ] **Step 1: Write the failing tests** — a process whose `Name` is 4 KB and whose environ
+- [x] **Step 1: Write the failing tests** — a process whose `Name` is 4 KB and whose environ
   carries a 4 KB `CI_JOB_NAME` and `CI_PROJECT_PATH`. Collect, then assert **for every
   one of the 12 metrics** that each label value is within its limit. Assert the
   `ci_*` values are bounded in `ciJobLabelValues` output too, not only on `gitlab_process_info`.
-- [ ] **Step 2: Run tests — MUST FAIL** (they are unbounded today)
-- [ ] **Step 3: Implement** — in `ciJobLabelValues`, wrap: `boundLabel(k.label, sanitizeLabelValue(environ[k.env]))`. In `Collect`, wrap `name`: `boundLabel("name", sanitizeLabelValue(p.Name))`. Order matters — sanitize first.
-- [ ] **Step 4: Run tests — MUST PASS**
-- [ ] **Step 5:** `make fmt && make lint`
+- [x] **Step 2: Run tests — MUST FAIL** (they are unbounded today)
+- [x] **Step 3: Implement** — in `ciJobLabelValues`, wrap: `boundLabel(k.label, sanitizeLabelValue(environ[k.env]))`. In `Collect`, wrap `name`: `boundLabel("name", sanitizeLabelValue(p.Name))`. Order matters — sanitize first.
+- [x] **Step 4: Run tests — MUST PASS**
+- [x] **Step 5:** `make fmt && make lint` (gofmt clean + `go vet` clean; `goimports` and `golangci-lint` binaries are not installed in this environment, so `make fmt`/`make lint` abort on the missing tool)
 
 ---
 

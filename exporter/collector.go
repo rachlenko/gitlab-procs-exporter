@@ -33,10 +33,15 @@ func ciJobLabelNames() []string {
 // ciJobLabelValues extracts the promoted CI label values from a process
 // environ map. A missing variable yields "" — Prometheus treats an empty
 // label value as absent, so non-CI processes simply carry no job identity.
+//
+// Bounding happens here rather than at the call sites so that every consumer
+// of these values inherits the MaxLabelBytes contract: the ci_* labels ride on
+// all 12 metrics, so an oversized value multiplies 12x into the TSDB index.
+// Order is fixed: sanitize first (make it valid UTF-8), then bound.
 func ciJobLabelValues(environ map[string]string) []string {
 	vals := make([]string, len(ciJobLabelKeys))
 	for i, k := range ciJobLabelKeys {
-		vals[i] = sanitizeLabelValue(environ[k.env])
+		vals[i] = boundLabel(k.label, sanitizeLabelValue(environ[k.env]))
 	}
 	return vals
 }
@@ -314,7 +319,7 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 
 	for _, p := range processes {
 		pidStr := fmt.Sprintf("%d", p.PID)
-		name := sanitizeLabelValue(p.Name)
+		name := boundLabel("name", sanitizeLabelValue(p.Name))
 		ciVals := ciJobLabelValues(p.Environ)
 		labels := append([]string{pidStr, name}, ciVals...)
 

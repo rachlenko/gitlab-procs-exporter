@@ -473,6 +473,105 @@ func TestBoundCmdline(t *testing.T) {
 	}
 }
 
+// name and the four ci_* labels ride on ALL 12 metrics, so an oversized value
+// there multiplies 12x into the TSDB index — unlike cmdline/environ, which
+// appear on gitlab_process_info alone. Every one of them must be bounded, and
+// bounded on every metric, not just on the info metric.
+func TestCollectBoundsNameAndCILabels(t *testing.T) {
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp: time.Now(),
+		PID:       9182,
+		Name:      strings.Repeat("n", 4096),
+		CmdLine:   "runner exec",
+		Environ: map[string]string{
+			"CI_JOB_NAME":     strings.Repeat("j", 4096),
+			"CI_PROJECT_PATH": strings.Repeat("g/", 2048),
+			"CI_JOB_ID":       strings.Repeat("1", 4096),
+			"CI_PIPELINE_ID":  strings.Repeat("2", 4096),
+		},
+		CreateTime: 400,
+		IsActive:   true,
+	})
+
+	collector := NewProcessCollector(store)
+	metricChan := make(chan prometheus.Metric, 24)
+	collector.Collect(metricChan)
+	close(metricChan)
+
+	metricCount := 0
+	checked := map[string]int{}
+	for m := range metricChan {
+		metricCount++
+		labels := readMetricLabels(t, m)
+		for name, limit := range MaxLabelBytes {
+			val, ok := labels[name]
+			if !ok {
+				continue
+			}
+			checked[name]++
+			if len(val) > limit+maxMarkerLen {
+				t.Errorf("%s: label %q is %d bytes, ceiling is %d (limit %d + marker %d)",
+					m.Desc().String(), name, len(val), limit+maxMarkerLen, limit, maxMarkerLen)
+			}
+			if !utf8.ValidString(val) {
+				t.Errorf("label %q is not valid UTF-8 after bounding: %q", name, val)
+			}
+		}
+	}
+
+	if metricCount != 12 {
+		t.Fatalf("expected 12 metrics, got %d", metricCount)
+	}
+	// name and the ci_* labels must have been seen on all 12 metrics; cmdline
+	// only on gitlab_process_info. Without this the loop above could silently
+	// check nothing.
+	for _, name := range []string{"name", "ci_job_id", "ci_job_name", "ci_project_path", "ci_pipeline_id"} {
+		if checked[name] != 12 {
+			t.Errorf("label %q was checked on %d metrics, expected all 12", name, checked[name])
+		}
+	}
+	if checked["cmdline"] != 1 {
+		t.Errorf("label %q was checked on %d metrics, expected 1 (gitlab_process_info)", "cmdline", checked["cmdline"])
+	}
+}
+
+// The ci_* values must be bounded at their source, so every caller of
+// ciJobLabelValues inherits the contract rather than only gitlab_process_info.
+func TestCIJobLabelValuesBounded(t *testing.T) {
+	vals := ciJobLabelValues(map[string]string{
+		"CI_JOB_ID":       strings.Repeat("1", 4096),
+		"CI_JOB_NAME":     strings.Repeat("j", 4096),
+		"CI_PROJECT_PATH": strings.Repeat("g/", 2048),
+		"CI_PIPELINE_ID":  strings.Repeat("2", 4096),
+	})
+	names := ciJobLabelNames()
+	if len(vals) != len(names) {
+		t.Fatalf("got %d values for %d label names", len(vals), len(names))
+	}
+	for i, name := range names {
+		limit, ok := MaxLabelBytes[name]
+		if !ok {
+			t.Fatalf("label %q has no entry in MaxLabelBytes — the contract must cover every ci_* label", name)
+		}
+		if len(vals[i]) > limit+maxMarkerLen {
+			t.Errorf("ciJobLabelValues %q is %d bytes, ceiling is %d", name, len(vals[i]), limit+maxMarkerLen)
+		}
+		if len(vals[i]) <= limit {
+			t.Errorf("ciJobLabelValues %q was not truncated at all (%d bytes) — a 4KB input must be cut", name, len(vals[i]))
+		}
+	}
+
+	// Sanitizing must still happen first: bounding invalid UTF-8 makes the rune
+	// walk-back meaningless.
+	bad := ciJobLabelValues(map[string]string{"CI_JOB_NAME": "job\xffname"})
+	for _, v := range bad {
+		if !utf8.ValidString(v) {
+			t.Errorf("ciJobLabelValues emitted invalid UTF-8: %q", v)
+		}
+	}
+}
+
 // A reaper — pid 1, a job shell — carries its dead children's I/O in the
 // process-wide counter while having issued none of it. The two families of
 // series must stay distinct, or topk() over write bytes ranks reapers.
