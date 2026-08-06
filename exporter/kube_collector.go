@@ -45,7 +45,15 @@ func (kc *KubeCollector) Collect(ch chan<- prometheus.Metric) {
 		if p.PodUID == "" {
 			continue
 		}
-		jobName := p.Environ["CI_JOB_NAME"]
+		// Same /proc-sourced value as the ci_job_name label, so it gets the same
+		// treatment and the same limit. sanitizeLabelValue is not optional:
+		// MustNewConstMetric panics on invalid UTF-8 and this collector shares
+		// the registry (and therefore the gather goroutine) with
+		// ProcessCollector, so a bad byte here takes the whole exporter down.
+		// Bounding happens BEFORE the dedup key so two over-long names that
+		// would collapse to one label set can't produce duplicate series.
+		jobName := boundLabelWith(MaxLabelBytes, "ci_job_name",
+			sanitizeLabelValue(p.Environ["CI_JOB_NAME"]), nil)
 		if jobName == "" {
 			continue
 		}

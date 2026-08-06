@@ -30,12 +30,6 @@ func ciJobLabelNames() []string {
 	return names
 }
 
-// ciJobLabelValues extracts the promoted CI label values from a process
-// environ map, bounded by the default contract. See ciJobLabelValuesWith.
-func ciJobLabelValues(environ map[string]string, obs ...truncationObserver) []string {
-	return ciJobLabelValuesWith(MaxLabelBytes, environ, obs...)
-}
-
 // ciJobLabelValuesWith extracts the promoted CI label values from a process
 // environ map. A missing variable yields "" — Prometheus treats an empty
 // label value as absent, so non-CI processes simply carry no job identity.
@@ -45,12 +39,12 @@ func ciJobLabelValues(environ map[string]string, obs ...truncationObserver) []st
 // all 12 metrics, so an oversized value multiplies 12x into the TSDB index.
 // Order is fixed: sanitize first (make it valid UTF-8), then bound.
 //
-// obs is optional so callers without a collector (tests, future call sites)
-// still get the contract; a collector passes itself to count the cuts.
-func ciJobLabelValuesWith(limits map[string]int, environ map[string]string, obs ...truncationObserver) []string {
+// obs may be nil for callers without a collector (tests); a collector passes
+// itself so the cuts are counted.
+func ciJobLabelValuesWith(limits map[string]int, environ map[string]string, obs truncationObserver) []string {
 	vals := make([]string, len(ciJobLabelKeys))
 	for i, k := range ciJobLabelKeys {
-		vals[i] = boundLabelWith(limits, k.label, sanitizeLabelValue(environ[k.env]), obs...)
+		vals[i] = boundLabelWith(limits, k.label, sanitizeLabelValue(environ[k.env]), obs)
 	}
 	return vals
 }
@@ -125,9 +119,13 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 	truncations := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "gitlab_exporter_label_truncations_total",
 		Help: "Label values cut by the MaxLabelBytes contract, by label name. " +
-			"A rising rate means the limit for that label is too low for this " +
-			"host's data, and the affected series carry a fingerprint marker " +
-			"instead of their full value.",
+			"Counted per gather, not per distinct value: a scrape that cuts N " +
+			"label values adds N, so a single long-lived process keeps adding " +
+			"on every scrape and the rate scales with scrape frequency and with " +
+			"the number of scrapers. Read it as a yes/no signal, not a count of " +
+			"distinct values. Non-zero means the limit for that label is too low " +
+			"for this host's data, and the affected series carry a fingerprint " +
+			"marker instead of their full value.",
 	}, []string{"label"})
 	// Initialize every contract label at zero so a scrape distinguishes "nothing
 	// was truncated" from "this label is not instrumented" — an absent series
@@ -212,28 +210,19 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 	}
 }
 
-// limits returns the collector's effective label-size table, falling back to
-// the published contract for a zero-value collector built without the
-// constructor.
-func (pc *ProcessCollector) limits() map[string]int {
-	if pc.maxLabelBytes == nil {
-		return MaxLabelBytes
-	}
-	return pc.maxLabelBytes
-}
-
 // boundLabel applies this collector's limit table and counts what it cuts.
 func (pc *ProcessCollector) boundLabel(name, value string) string {
-	return boundLabelWith(pc.limits(), name, value, pc)
+	return boundLabelWith(pc.maxLabelBytes, name, value, pc)
 }
 
-// observeTruncation implements truncationObserver: boundLabel calls it once per
-// value it actually cut. CounterVec is safe for concurrent use, which matters
-// because Collect runs on the registry's gather goroutine.
+// observeTruncation implements truncationObserver: boundLabelWith calls it once
+// per value it actually cut. CounterVec is safe for concurrent use, which
+// matters because Collect runs on the registry's gather goroutine.
+//
+// No nil guard: the constructor always sets truncations, and Describe/Collect
+// already dereference it unguarded. Guarding here and not there would leave the
+// zero-value collector half-supported, which is worse than not supporting it.
 func (pc *ProcessCollector) observeTruncation(label string) {
-	if pc.truncations == nil {
-		return
-	}
 	pc.truncations.WithLabelValues(label).Inc()
 }
 
@@ -280,11 +269,10 @@ func RedactEnviron(environ map[string]string, extraKeySubstrings []string) map[s
 const (
 	// maxEnvironVars caps how many variables (sorted by key) are emitted.
 	maxEnvironVars = 100
-	// maxEnvironValueLen caps a single value's length in bytes; longer values
-	// are cut by truncateWithFingerprint, which cuts on a rune boundary (so the
-	// label stays valid UTF-8) and appends the original length and a
-	// fingerprint. A truncated value is therefore at most
-	// maxEnvironValueLen+maxMarkerLen bytes, not maxEnvironValueLen.
+	// maxEnvironValueLen caps a single value's length in bytes; a longer value
+	// is replaced WHOLE by environTruncMarker, which carries the original
+	// length and a fingerprint but none of the body. The marker is always
+	// shorter than this cap, so a truncated value never exceeds it.
 	maxEnvironValueLen = 256
 	// maxEnvironBytes is a hard ceiling on the joined label. It's a conservative,
 	// self-imposed cap that keeps label values small and predictable; 100 vars *
@@ -336,12 +324,14 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 	for _, k := range keys {
 		val := sanitizeLabelValue(environ[k])
 		switch {
-		// Arm order is load-bearing: redaction must win, or an over-long secret
-		// would leak a prefix and a fingerprint of itself.
+		// Arm order is load-bearing: redaction must win so the marker never
+		// carries a fingerprint of a known secret.
 		case isSensitivePair(k, val, pc.extraKeySubstrings):
 			val = "[REDACTED]"
-		default:
-			val = truncateWithFingerprint(val, maxEnvironValueLen)
+		// Length alone is a secret signal in environ — see environTruncMarker
+		// for why the body is dropped here rather than truncated to a prefix.
+		case len(val) > maxEnvironValueLen:
+			val = environTruncMarker(val)
 		}
 		pair := fmt.Sprintf("%s=%s", sanitizeLabelValue(k), val)
 
@@ -387,7 +377,7 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, p := range processes {
 		pidStr := fmt.Sprintf("%d", p.PID)
 		name := pc.boundLabel("name", sanitizeLabelValue(p.Name))
-		ciVals := ciJobLabelValuesWith(pc.limits(), p.Environ, pc)
+		ciVals := ciJobLabelValuesWith(pc.maxLabelBytes, p.Environ, pc)
 		labels := append([]string{pidStr, name}, ciVals...)
 
 		// Emit core stats

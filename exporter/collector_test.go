@@ -65,7 +65,7 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 	collector := NewProcessCollector(store)
 
 	// Test Describe
-	descChan := make(chan *prometheus.Desc, 24)
+	descChan := make(chan *prometheus.Desc, 256)
 	collector.Describe(descChan)
 	close(descChan)
 
@@ -89,7 +89,7 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 	}
 
 	// Test Collect
-	metricChan := make(chan prometheus.Metric, 24)
+	metricChan := make(chan prometheus.Metric, 256)
 	collector.Collect(metricChan)
 	close(metricChan)
 
@@ -255,6 +255,55 @@ func TestScrubEnvironBuiltinStillWorks(t *testing.T) {
 	}
 }
 
+// An over-long environ value must never contribute a PREFIX of its body to the
+// label. environ is the one label built from arbitrary operator-unknown pairs,
+// and isSensitivePair only recognises token-shaped values: isTokenCharset
+// rejects braces, quotes, colons and newlines, so a JSON service-account blob
+// matches neither the key denylist (its key is arbitrary) nor the value
+// heuristics. Length is the only signal left, and emitting a prefix would
+// publish the credential material it guards to every scraper.
+func TestScrubEnvironNeverLeaksPrefixOfOverLongValue(t *testing.T) {
+	pc := NewProcessCollector(NewHistoryStore())
+
+	const secret = "superSecretKeyMaterialDoNotPublish"
+	// Shaped like a real GCP service-account key: not token charset (braces,
+	// quotes, colons), and "GCP_SA" hits no denylist substring.
+	blob := `{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----\n` +
+		secret + strings.Repeat("A", 512) + `\n-----END PRIVATE KEY-----\n"}`
+
+	if isSensitivePair("GCP_SA", blob, nil) {
+		t.Skip("heuristics now catch this shape; the length fallback is no longer the only guard")
+	}
+
+	out, _ := pc.scrubEnviron(map[string]string{"GCP_SA": blob})
+	if strings.Contains(out, secret) {
+		t.Errorf("over-long environ value leaked its body into the label: %q", out)
+	}
+	if want := "GCP_SA=" + environTruncMarker(blob); out != want {
+		t.Errorf("expected the value replaced whole by %q, got %q", want, out)
+	}
+	// The marker still has to identify what was dropped, or truncation is
+	// information-destroying again.
+	if !strings.Contains(out, fmt.Sprintf("len=%d;sha256=", len(blob))) {
+		t.Errorf("marker must carry the original length and fingerprint, got %q", out)
+	}
+}
+
+// The environ marker replaces the body, so it can only ever shrink a value.
+// If it could exceed maxEnvironValueLen, "bounding" would grow the label.
+func TestEnvironTruncMarkerFitsUnderValueCap(t *testing.T) {
+	for _, size := range []int{maxEnvironValueLen + 1, 4096, 1 << 20} {
+		got := environTruncMarker(strings.Repeat("x", size))
+		if len(got) > maxEnvironValueLen {
+			t.Errorf("marker for a %d-byte value is %d bytes, over the %d cap", size, len(got), maxEnvironValueLen)
+		}
+		if len(got) > maxEnvironMarkerLen {
+			t.Errorf("marker for a %d-byte value is %d bytes, over its own %d ceiling",
+				size, len(got), maxEnvironMarkerLen)
+		}
+	}
+}
+
 func TestScrubEnvironDeterministicOrder(t *testing.T) {
 	pc := NewProcessCollector(NewHistoryStore())
 	// Keys chosen so none trips the built-in denylist or value heuristics.
@@ -268,14 +317,14 @@ func TestScrubEnvironDeterministicOrder(t *testing.T) {
 func TestScrubEnvironBounds(t *testing.T) {
 	pc := NewProcessCollector(NewHistoryStore())
 
-	// Over-long value keeps a prefix plus the informative marker carrying the
-	// ORIGINAL length and a fingerprint — the same contract boundLabel applies.
+	// Over-long value is replaced WHOLE by a marker carrying the ORIGINAL length
+	// and a fingerprint — no prefix of the body survives.
 	longVal := strings.Repeat("x", maxEnvironValueLen+1)
 	out, trunc := pc.scrubEnviron(map[string]string{"BIG": longVal})
-	if want := "BIG=" + truncateWithFingerprint(longVal, maxEnvironValueLen); out != want {
-		t.Errorf("expected over-long value truncated to %q, got %q", want, out)
+	if want := "BIG=" + environTruncMarker(longVal); out != want {
+		t.Errorf("expected over-long value replaced by %q, got %q", want, out)
 	}
-	if !strings.Contains(out, fmt.Sprintf("[len=%d;sha256=", len(longVal))) {
+	if !strings.Contains(out, fmt.Sprintf("len=%d;sha256=", len(longVal))) {
 		t.Errorf("marker must report the original length %d, got %q", len(longVal), out)
 	}
 	if trunc {
@@ -326,9 +375,10 @@ func TestScrubEnvironBounds(t *testing.T) {
 		t.Error("expected truncated flag when byte ceiling is hit")
 	}
 
-	// Same ceiling, but with the marker in play: the fingerprint marker is ~35
-	// bytes against 11 for the old "[TRUNCATED]", so every truncated pair is
-	// bigger and the ceiling is reached sooner. It must still hold exactly.
+	// Same ceiling, but with markers in play. Every value here is over-long, so
+	// every pair collapses to its marker: the joined label stays well under the
+	// ceiling and NOTHING is dropped. That is the point — replacing the body
+	// rather than keeping a 256-byte prefix is what makes the marker path cheap.
 	marked := make(map[string]string, maxEnvironVars)
 	for i := 0; i < maxEnvironVars; i++ {
 		marked[fmt.Sprintf("K%04d", i)] = strings.Repeat("z", maxEnvironValueLen+1)
@@ -337,11 +387,14 @@ func TestScrubEnvironBounds(t *testing.T) {
 	if len(out) > maxEnvironBytes {
 		t.Errorf("environ label %d bytes exceeds ceiling %d with the marker in play", len(out), maxEnvironBytes)
 	}
-	if !trunc {
-		t.Error("expected truncated flag when the byte ceiling is hit with markers")
+	if trunc {
+		t.Error("per-value markers drop no variable, so the list is complete and the flag must stay unset")
 	}
-	if !strings.Contains(out, ";sha256=") {
-		t.Errorf("expected fingerprint markers in the joined label, got %q", out)
+	if got := strings.Count(out, ";sha256="); got != maxEnvironVars {
+		t.Errorf("expected %d markers in the joined label, got %d", maxEnvironVars, got)
+	}
+	if strings.Contains(out, strings.Repeat("z", maxEnvironValueLen)) {
+		t.Errorf("an over-long value leaked its body into the joined label: %q", out)
 	}
 	if !utf8.ValidString(out) {
 		t.Errorf("environ label is not valid UTF-8: %q", out)
@@ -418,31 +471,41 @@ func TestScrubEnvironEmpty(t *testing.T) {
 	}
 }
 
-// TestScrubEnvironUTF8Safe verifies the cut never lands mid-rune: the value is
-// now byte-cut (not replaced whole), so the rune walk-back is what keeps the
-// label valid UTF-8 — and MustNewConstMetric panics on invalid UTF-8.
+// TestScrubEnvironUTF8Safe pins that a multi-byte value can never leave a
+// partial rune in the label — MustNewConstMetric panics on invalid UTF-8, and
+// that panic fires on the registry's gather goroutine.
+//
+// For environ the guarantee is structural rather than earned by a walk-back:
+// an over-long value is replaced whole by an all-ASCII marker, so there is no
+// cut to land mid-rune. A value at or under the cap is emitted verbatim and was
+// already valid. Both halves are checked here so a future change back to
+// prefix-cutting fails loudly instead of silently reintroducing the hazard.
 func TestScrubEnvironUTF8Safe(t *testing.T) {
 	pc := NewProcessCollector(NewHistoryStore())
-	// "世" is 3 bytes and maxEnvironValueLen is not a multiple of 3, so the raw
-	// cut lands mid-rune and the walk-back must fire.
+
+	// "世" is 3 bytes and maxEnvironValueLen is not a multiple of 3, so any
+	// byte-cut at the cap would land mid-rune.
 	multiByte := strings.Repeat("世", maxEnvironValueLen)
 	out, _ := pc.scrubEnviron(map[string]string{"WIDE": multiByte})
-	if want := "WIDE=" + truncateWithFingerprint(multiByte, maxEnvironValueLen); out != want {
-		t.Errorf("expected over-long multi-byte value truncated to %q, got %q", want, out)
+	if want := "WIDE=" + environTruncMarker(multiByte); out != want {
+		t.Errorf("expected over-long multi-byte value replaced by %q, got %q", want, out)
 	}
 	if !utf8.ValidString(out) {
 		t.Errorf("environ label is not valid UTF-8: %q", out)
 	}
-	// The marker reports the original byte length, not the surviving prefix.
-	if !strings.Contains(out, fmt.Sprintf("[len=%d;sha256=", len(multiByte))) {
+	// The marker reports the original byte length, not a rune count.
+	if !strings.Contains(out, fmt.Sprintf("len=%d;sha256=", len(multiByte))) {
 		t.Errorf("marker must report the original length %d, got %q", len(multiByte), out)
 	}
-	prefix, _, found := strings.Cut(strings.TrimPrefix(out, "WIDE="), truncEllipsis)
-	if !found {
-		t.Fatalf("expected the truncation marker in %q", out)
+
+	// Exactly at the cap: emitted verbatim, still valid.
+	atCap := strings.Repeat("世", maxEnvironValueLen/3)
+	out, _ = pc.scrubEnviron(map[string]string{"WIDE": atCap})
+	if want := "WIDE=" + atCap; out != want {
+		t.Errorf("a value within the cap must pass through unchanged, got %q", out)
 	}
-	if len(prefix)%3 != 0 {
-		t.Errorf("prefix %d bytes is not a whole number of 3-byte runes", len(prefix))
+	if !utf8.ValidString(out) {
+		t.Errorf("environ label is not valid UTF-8: %q", out)
 	}
 }
 
@@ -516,12 +579,12 @@ func TestSanitizeLabelValue(t *testing.T) {
 func TestBoundCmdline(t *testing.T) {
 	maxCmdline := MaxLabelBytes["cmdline"]
 
-	if got := boundLabel("cmdline", "short cmd"); got != "short cmd" {
+	if got := boundLabelWith(MaxLabelBytes, "cmdline", "short cmd", nil); got != "short cmd" {
 		t.Errorf("short cmdline must pass through unchanged, got %q", got)
 	}
 	// 2-byte runes, twice the limit: the cut must land on a rune boundary.
 	long := strings.Repeat("ы", maxCmdline)
-	got := boundLabel("cmdline", long)
+	got := boundLabelWith(MaxLabelBytes, "cmdline", long, nil)
 	if ceiling := maxCmdline + maxMarkerLen; len(got) > ceiling {
 		t.Errorf("bounded cmdline is %d bytes, limit %d", len(got), ceiling)
 	}
@@ -546,7 +609,7 @@ func TestBoundCmdline(t *testing.T) {
 		t.Fatalf("test assumes the cmdline limit (%d) is not a multiple of 3", maxCmdline)
 	}
 	multi := strings.Repeat("世", maxCmdline) // 3 bytes each
-	gotMulti := boundLabel("cmdline", multi)
+	gotMulti := boundLabelWith(MaxLabelBytes, "cmdline", multi, nil)
 	if !utf8.ValidString(gotMulti) {
 		t.Errorf("bounded 3-byte-rune cmdline is not valid UTF-8 (walk-back failed): %q", gotMulti)
 	}
@@ -582,7 +645,7 @@ func TestCollectBoundsNameAndCILabels(t *testing.T) {
 	})
 
 	collector := NewProcessCollector(store)
-	metricChan := make(chan prometheus.Metric, 24)
+	metricChan := make(chan prometheus.Metric, 256)
 	collector.Collect(metricChan)
 	close(metricChan)
 
@@ -644,7 +707,7 @@ func TestCollectCmdlineUsesSharedContract(t *testing.T) {
 
 	// Act
 	collector := NewProcessCollector(store)
-	metricChan := make(chan prometheus.Metric, 24)
+	metricChan := make(chan prometheus.Metric, 256)
 	collector.Collect(metricChan)
 	close(metricChan)
 
@@ -656,7 +719,7 @@ func TestCollectCmdlineUsesSharedContract(t *testing.T) {
 			continue
 		}
 		seen = true
-		if want := boundLabel("cmdline", cmdline); val != want {
+		if want := boundLabelWith(MaxLabelBytes, "cmdline", cmdline, nil); val != want {
 			t.Errorf("emitted cmdline %q, want the shared-contract value %q", val, want)
 		}
 	}
@@ -668,12 +731,12 @@ func TestCollectCmdlineUsesSharedContract(t *testing.T) {
 // The ci_* values must be bounded at their source, so every caller of
 // ciJobLabelValues inherits the contract rather than only gitlab_process_info.
 func TestCIJobLabelValuesBounded(t *testing.T) {
-	vals := ciJobLabelValues(map[string]string{
+	vals := ciJobLabelValuesWith(MaxLabelBytes, map[string]string{
 		"CI_JOB_ID":       strings.Repeat("1", 4096),
 		"CI_JOB_NAME":     strings.Repeat("j", 4096),
 		"CI_PROJECT_PATH": strings.Repeat("g/", 2048),
 		"CI_PIPELINE_ID":  strings.Repeat("2", 4096),
-	})
+	}, nil)
 	names := ciJobLabelNames()
 	if len(vals) != len(names) {
 		t.Fatalf("got %d values for %d label names", len(vals), len(names))
@@ -693,10 +756,43 @@ func TestCIJobLabelValuesBounded(t *testing.T) {
 
 	// Sanitizing must still happen first: bounding invalid UTF-8 makes the rune
 	// walk-back meaningless.
-	bad := ciJobLabelValues(map[string]string{"CI_JOB_NAME": "job\xffname"})
+	bad := ciJobLabelValuesWith(MaxLabelBytes, map[string]string{"CI_JOB_NAME": "job\xffname"}, nil)
 	for _, v := range bad {
 		if !utf8.ValidString(v) {
-			t.Errorf("ciJobLabelValues emitted invalid UTF-8: %q", v)
+			t.Errorf("ciJobLabelValuesWith emitted invalid UTF-8: %q", v)
+		}
+	}
+}
+
+// TestBoundLabelSanitizesBeforeBounding pins the sanitize-then-bound ORDER,
+// which is the rule every doc comment on this feature repeats and which no
+// other test can catch: the existing invalid-UTF-8 cases use input that is
+// either short (never truncated) or valid (never sanitized), so swapping the
+// two steps leaves them all green.
+//
+// The order matters because strings.ToValidUTF8 expands each isolated bad byte
+// to a 3-byte U+FFFD. Sanitizing AFTER the cut therefore re-inflates the value
+// past the limit it was just bounded to, and the rune walk-back — which exists
+// so MustNewConstMetric never sees a partial rune — operates on bytes that are
+// about to be rewritten anyway.
+func TestBoundLabelSanitizesBeforeBounding(t *testing.T) {
+	// Long AND invalid: every byte pair is one ASCII byte plus one bad byte, so
+	// sanitizing grows it ~2x and truncation must happen on the grown value.
+	raw := strings.Repeat("a\xff", 2048)
+
+	for _, label := range []string{"name", "ci_job_name"} {
+		limit := MaxLabelBytes[label]
+		got := boundLabelWith(MaxLabelBytes, label, sanitizeLabelValue(raw), nil)
+
+		if !utf8.ValidString(got) {
+			t.Errorf("%s: bounded value is not valid UTF-8: %q", label, got)
+		}
+		if ceiling := limit + maxMarkerLen; len(got) > ceiling {
+			t.Errorf("%s: bounded value is %d bytes, ceiling is %d — sanitizing after "+
+				"bounding re-inflates past the limit", label, len(got), ceiling)
+		}
+		if !strings.Contains(got, ";sha256=") {
+			t.Errorf("%s: a %d-byte input must be truncated, got %q", label, len(raw), got)
 		}
 	}
 }
@@ -762,6 +858,45 @@ func TestCollectCountsLabelTruncations(t *testing.T) {
 		if _, ok := got[label]; !ok {
 			t.Errorf("no truncation series for contract label %q", label)
 		}
+	}
+}
+
+// The observer has to be wired into the ci_* path too, not just name/cmdline.
+// Collect reaches the ci_* labels through ciJobLabelValuesWith rather than
+// pc.boundLabel, so it is a separate wiring that a name-only assertion cannot
+// cover: dropping the observer argument there leaves four of the six contract
+// labels counting nothing, and the alert on them silently never fires.
+func TestCollectCountsCIJobLabelTruncations(t *testing.T) {
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp: time.Now(),
+		PID:       9187,
+		Name:      "runner", // short: only the ci_* labels may count here
+		CmdLine:   "runner exec",
+		Environ: map[string]string{
+			"CI_JOB_NAME":     strings.Repeat("j", 4096),
+			"CI_PROJECT_PATH": strings.Repeat("g/", 2048),
+		},
+		CreateTime: 400,
+		IsActive:   true,
+	})
+
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(NewProcessCollector(store))
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	got := truncationCounts(t, mfs)
+	for _, label := range []string{"ci_job_name", "ci_project_path"} {
+		if got[label] < 1 {
+			t.Errorf("gitlab_exporter_label_truncations_total{label=%q} is %v, want >= 1 — "+
+				"the ci_* path is not passing the observer", label, got[label])
+		}
+	}
+	if got["name"] != 0 {
+		t.Errorf("short name must not count as truncated, got %v", got["name"])
 	}
 }
 
@@ -886,7 +1021,7 @@ func TestNewProcessCollectorWithConfigNilUsesDefaults(t *testing.T) {
 	})
 
 	pc := NewProcessCollectorWithConfig(store, nil)
-	metricChan := make(chan prometheus.Metric, 24)
+	metricChan := make(chan prometheus.Metric, 256)
 	pc.Collect(metricChan)
 	close(metricChan)
 
@@ -897,7 +1032,7 @@ func TestNewProcessCollectorWithConfigNilUsesDefaults(t *testing.T) {
 			continue
 		}
 		seen = true
-		if want := boundLabel("name", name); val != want {
+		if want := boundLabelWith(MaxLabelBytes, "name", name, nil); val != want {
 			t.Errorf("emitted name %q, want the default-contract value %q", val, want)
 		}
 	}

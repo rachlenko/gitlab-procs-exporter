@@ -208,3 +208,71 @@ func TestLoadConfigMaxLabelBytesAcceptsTheFloor(t *testing.T) {
 		t.Errorf("name: got %d, want %d", got, minLabelBytes)
 	}
 }
+
+// Several bad entries must always name the same one. Map iteration order is
+// randomized per run, so without the sort a config with two mistakes reports a
+// different error each restart and an operator fixing "the" error chases the
+// other one. Every other rejection case has exactly one bad entry and so cannot
+// catch a dropped sort.
+func TestLoadConfigMaxLabelBytesReportsDeterministicEntry(t *testing.T) {
+	const yaml = "max_label_bytes:\n  zzz_unknown: 512\n  aaa_unknown: 512\n"
+
+	// One file, reloaded: the path is part of the message, so a fresh temp dir
+	// per iteration would differ for reasons that have nothing to do with sorting.
+	path := writeConfig(t, yaml)
+
+	var first string
+	for i := 0; i < 20; i++ {
+		_, err := LoadConfig(path)
+		if err == nil {
+			t.Fatal("expected an error for two unknown labels")
+		}
+		if i == 0 {
+			first = err.Error()
+			continue
+		}
+		if err.Error() != first {
+			t.Fatalf("error varies between runs:\n  %s\n  %s", first, err)
+		}
+	}
+	// Sorted order means the lexicographically smallest bad name is reported.
+	if !strings.Contains(first, "aaa_unknown") {
+		t.Errorf("expected the sorted-first bad entry, got %q", first)
+	}
+}
+
+// mergedMaxLabelBytes must not trust its caller. NewProcessCollectorWithConfig
+// is exported and takes any *Config, so a hand-built one can carry a limit that
+// LoadConfig would have rejected — and the failure mode is fail-OPEN:
+// truncateWithFingerprint reads max <= 0 as "no limit configured" and passes the
+// value through, silently disabling the bound the operator was configuring.
+func TestMergedMaxLabelBytesIgnoresUnvalidatedOverrides(t *testing.T) {
+	tests := map[string]int{
+		"zero":             0,
+		"negative":         -1,
+		"below the marker": minLabelBytes - 1,
+	}
+	for name, limit := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := mergedMaxLabelBytes(map[string]int{"cmdline": limit})["cmdline"]
+			if got != MaxLabelBytes["cmdline"] {
+				t.Errorf("cmdline limit is %d, want the %d default — an unusable override "+
+					"must not disable the bound", got, MaxLabelBytes["cmdline"])
+			}
+		})
+	}
+}
+
+// The merge copies: MaxLabelBytes is package state shared by every collector in
+// the process, so applying one collector's overrides must not change what
+// another one enforces.
+func TestMergedMaxLabelBytesLeavesContractUntouched(t *testing.T) {
+	want := MaxLabelBytes["name"]
+	merged := mergedMaxLabelBytes(map[string]int{"name": 512})
+	if merged["name"] != 512 {
+		t.Fatalf("override not applied: got %d", merged["name"])
+	}
+	if got := MaxLabelBytes["name"]; got != want {
+		t.Errorf("mergedMaxLabelBytes mutated the package contract: name is %d, want %d", got, want)
+	}
+}

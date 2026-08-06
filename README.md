@@ -30,6 +30,7 @@ To solve this, before the pipeline runner forcefully terminates the job, the wor
 
 *   **Sliding 10-Minute History Store**: Caches metrics and metadata (even for processes that have exited) for exactly 10 minutes, solving a major blind spot in transient process tracking.
 *   **Security Redaction Engine**: Automatically redacts environment variable values containing sensitive terms like `key`, `pass`, `token`, `secret`, `url`, `api`, etc., before exposing them — both on the `/metrics` endpoint and in the `/api/processes` / `/api/history` JSON responses.
+*   **Bounded Label Contract**: Every emitted label value is byte-capped by an explicit, documented, operator-overridable contract (see [Label size contract](#label-size-contract)), with a deterministic truncation marker that carries the original length and a `sha256` fingerprint, and a counter so a cut is never silent.
 *   **Self-Contained Executable**: Embeds the frontend Single Page Application (SPA) dashboard within the compiled Go binary using the standard Go `embed` directive.
 *   **Cross-Platform Telemetry**: Utilizes `gopsutil` to parse `/proc` natively on Linux and system APIs on macOS.
 *   **`jobreport` CLI & `jobreport-web` UI**: A companion one-shot CLI ([`cmd/jobreport`](cmd/jobreport/README.md)) renders top-N process tables straight from Prometheus, and a single self-contained htmx web app ([`cmd/jobreport-web`](cmd/jobreport-web/README.md)) runs it from the browser against a chosen Prometheus URL, job id, and UTC time window.
@@ -230,6 +231,15 @@ enforces it for you.
 | `ci_pipeline_id` | 32 | all 12 per-process metrics | Numeric. |
 | `cmdline` | 2048 | `gitlab_process_info` | `ARG_MAX` can reach 2 MB; this cap **is** hit in practice. |
 | `environ` | 8192 | `gitlab_process_info` | Composed blob with its own three-way bound — see [Hardened environ scrubbing](#hardened-environ-scrubbing). |
+| `job_name` | 256 | `kuber_cpu_request`, `kuber_memory_request` | In-cluster only. Same `CI_JOB_NAME` source as `ci_job_name`, so it shares that limit and follows a `ci_job_name` override. Its cuts are not counted separately. |
+
+> **The four `ci_*` limits are estimates, not measurements.** They were derived
+> on an audit host that was running no CI jobs, so every `ci_*` value observed
+> was empty. Job names and project paths are long-tailed (`parallel:matrix`
+> values, deep subgroup nesting), so re-audit against a real runner over a
+> 7-day window and raise them via `max_label_bytes` if
+> `gitlab_exporter_label_truncations_total{label=~"ci_.*"}` moves. The `name`,
+> `cmdline` and `environ` limits *are* measured against production data.
 
 Limits are **bytes of a single label value**, never runes: Prometheus charges
 per label value and per series, and its index memory is byte-oriented.
@@ -275,11 +285,19 @@ Every cut increments a counter, so truncation is never silent:
 |---|---|---|---|
 | `gitlab_exporter_label_truncations_total` | counter | `label` | Label values cut by the contract, by label name. |
 
-Every contract label — the six in the table above except `environ` — is
-pre-initialised at `0`, so an absent series means "this exporter does not
-instrument that label", not "nothing was truncated"; an alert on it cannot
-silently never fire. `environ` is bounded by its own three-way rule rather than
-by the contract table, and its per-value cuts are not counted here.
+**Read it as a yes/no signal, not a count of distinct values.** The counter is
+incremented per *gather*: a scrape that cuts N label values adds N, so a single
+long-lived process with an over-long `cmdline` keeps adding on every scrape, the
+rate scales with scrape frequency, and a second Prometheus (or a `curl /metrics`
+while debugging) inflates it. "Is anything being cut, and which label" is the
+question it answers well.
+
+The six overridable contract labels are pre-initialised at `0`, so an absent
+series means "this exporter does not instrument that label", not "nothing was
+truncated"; an alert on it cannot silently never fire. Two labels are bounded
+but not counted here: `environ`, which is bounded by its own three-way rule
+rather than by the contract table, and the in-cluster `job_name`, which rides on
+a separate collector.
 
 ```promql
 # Labels being cut on this host, and how often
@@ -302,11 +320,21 @@ scrape_configs:
     label_limit: 32
 ```
 
-⚠️ `label_value_length_limit` must stay **at or above** the exporter's `environ`
-ceiling of 8192. Set it lower and Prometheus rejects the **whole scrape**, not
-just the offending label. That ceiling (`maxEnvironBytes`) is a build-time
-constant and is *not* overridable via `max_label_bytes`, so lowering the scrape
-limit below 8192 requires a rebuild.
+Under the **Prometheus Operator** — the recommended in-cluster path, see
+[deploy/k8s/README.md](deploy/k8s/README.md) — the equivalent fields live on the
+`ServiceMonitor` itself and are spelled differently:
+
+```yaml
+spec:
+  labelValueLengthLimit: 8192
+  labelLimit: 32
+```
+
+⚠️ `label_value_length_limit` / `labelValueLengthLimit` must stay **at or above**
+the exporter's `environ` ceiling of 8192. Set it lower and Prometheus rejects
+the **whole scrape**, not just the offending label. That ceiling
+(`maxEnvironBytes`) is a build-time constant and is *not* overridable via
+`max_label_bytes`, so lowering the scrape limit below 8192 requires a rebuild.
 
 ### Kubernetes job-resource metrics (only in-cluster)
 
@@ -436,7 +464,20 @@ groups:
           summary: "High Disk I/O throughput on {{ $labels.name }} (PID: {{ $labels.pid }})"
           description: "Combined read/write speed for {{ $labels.name }} is {{ $value | humanize1024Bytes }}/s."
 
-      # 4. Alert if a monitored process crashes or unexpectedly exits (disappears from live metrics)
+      # 4. Alert if the label size contract is cutting values on this host.
+      #    Treat as yes/no: the counter is incremented per gather, so the rate
+      #    scales with scrape frequency and with the number of scrapers.
+      #    See "Label size contract" for raising the limit via max_label_bytes.
+      - alert: LabelValuesBeingTruncated
+        expr: rate(gitlab_exporter_label_truncations_total[1h]) > 0
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Label {{ $labels.label }} is being truncated on {{ $labels.instance }}"
+          description: "The {{ $labels.label }} limit is too low for this host's data; affected series carry a fingerprint marker instead of their full value."
+
+      # 5. Alert if a monitored process crashes or unexpectedly exits (disappears from live metrics)
       - alert: CriticalProcessExited
         expr: absent(gitlab_process_info{name=~"sidekiq|gitaly|puma"}) == 1
         for: 30s
@@ -696,11 +737,13 @@ kubectl -n monitoring exec ds/gitlab-procs-exporter -- \
   sh -c 'wget -qO- localhost:8000/metrics | grep kuber_'
 ```
 
-### Supplying `--config` (sensitive-data filters) in Kubernetes
+### Supplying `--config` (redaction filters and label limits) in Kubernetes
 
-The redaction filters from [Adding sensitive-data filters](#adding-sensitive-data-filters)
-work in-cluster too: ship the config as a `ConfigMap`, mount it into the
-DaemonSet, and point `--config` at the mounted path.
+Both config-file knobs work in-cluster — the redaction filters from
+[Adding sensitive-data filters](#adding-sensitive-data-filters) and the
+`max_label_bytes` overrides from [Label size contract](#label-size-contract).
+Ship the config as a `ConfigMap`, mount it into the DaemonSet, and point
+`--config` at the mounted path.
 
 Add a ConfigMap alongside the manifest above:
 
@@ -715,6 +758,10 @@ data:
     redact_key_substrings:
       - vault
       - internal_token
+    # Optional — see "Label size contract" for the overridable names and the
+    # 49-byte floor. Omitted labels keep their default.
+    # max_label_bytes:
+    #   ci_job_name: 512
 ```
 
 Then extend the DaemonSet's container with the flag + a read-only mount, and
@@ -741,8 +788,11 @@ declare the volume (the rest of the container spec — `securityContext`, `ports
 
 The config is read **once at startup** and is **fail-fast**: a missing or
 malformed file makes the pod exit (visible as `CrashLoopBackOff` / in
-`kubectl logs`). After editing the ConfigMap, restart the DaemonSet so the new
-filters take effect:
+`kubectl logs`). An **unknown label name** under `max_label_bytes`, a
+non-positive value, or a value **below 49 bytes** is equally fatal — that is the
+most likely new cause of `CrashLoopBackOff` after a ConfigMap edit, and the
+error in `kubectl logs` names the offending key. After editing the ConfigMap,
+restart the DaemonSet so the new config takes effect:
 
 ```bash
 kubectl -n monitoring rollout restart ds/gitlab-procs-exporter
@@ -772,35 +822,47 @@ config in the environment (tens of KB) can't emit a value large enough to bloat
 or fail the scrape:
 
 - at most **100 variables** (sorted by key) are emitted;
-- any single value longer than **256 bytes** is cut on a rune boundary and gets
-  the fingerprint marker described under
-  [Truncation marker](#truncation-marker) — so the prefix survives, the label
-  stays valid UTF-8, and "too long" stays distinguishable from "secret";
-- `[REDACTED]` **wins over truncation**: an over-long sensitive value is replaced
-  whole, never cut, so it can't leak a prefix and a fingerprint of itself;
+- any single value longer than **256 bytes** is replaced **entirely** by a
+  marker carrying the original byte length and fingerprint —
+  `[TRUNCATED;len=768;sha256=f5af23e90f7a]` — so the label stays valid UTF-8 and
+  "too long" stays distinguishable from "secret";
+- `[REDACTED]` **wins over truncation**, so the marker never carries a
+  fingerprint of a value already known to be a secret;
 - the joined label is capped at a hard **8192-byte** ceiling, stopping at a
   variable boundary once it would be exceeded.
+
+> **Why `environ` drops the body while `name`/`cmdline`/`ci_*` keep a prefix.**
+> `environ` is the one label composed of arbitrary key/value pairs the exporter
+> knows nothing about, and **length alone is a secret signal there**. The secret
+> heuristics only recognise token-*shaped* values, so a JSON service-account
+> key, a PEM body or a connection string — braces, quotes, colons, newlines —
+> matches neither the key denylist nor the value heuristics. A 256-byte prefix
+> of one of those is credential material published to every scraper, so an
+> over-long environ value contributes no body at all. The other bounded labels
+> have a known, non-secret shape and keep their prefix.
 
 When the variable **list** is left incomplete — variables dropped because there
 were more than 100 or because the byte ceiling was hit — the companion
 `environ_truncated` label is set to `"1"`. Per-value `[REDACTED]` substitutions
 and per-value truncation keep the variable present and do **not** set that flag.
 
-> **Behaviour change:** the fingerprint marker is ~49 bytes worst case against
-> 11 for the old `[TRUNCATED]`. On a process with many over-long environment
-> values the joined label now reaches the 8192-byte ceiling **sooner**, so more
-> variables are dropped and `environ_truncated` flips to `"1"` more often than
-> it used to. That is the contract working as designed, but it is visible in
-> existing dashboards and alerts on that label.
+> **Behaviour change:** the marker is ~40 bytes typical against 11 for the old
+> bare `[TRUNCATED]`, so a process with many over-long environment values reaches
+> the 8192-byte ceiling marginally sooner and `environ_truncated` can flip to
+> `"1"` where it previously did not. Because the marker replaces the value rather
+> than following a prefix, it is far smaller than the ~305-byte worst case a
+> prefix-plus-marker scheme would produce, and it is always shorter than the
+> 256-byte per-value cap it enforces.
 
-The `cmdline` label is size-bounded the same way: it is capped at **2048
-bytes**, cut on a rune boundary with the same fingerprint marker, so a process
-with an enormous argv (`ARG_MAX` can reach 2 MB) can't bloat the scrape. Both
-bound is an entry in the [label size contract](#label-size-contract) and
-increments `gitlab_exporter_label_truncations_total{label="cmdline"}` when it
-fires. `environ`'s per-value cuts are **not** counted there — the counter tracks
-whole label values against the contract table, and `environ` is bounded by its
-own three-way rule instead.
+The `cmdline` label is size-bounded too, but on the prefix-keeping side: it is
+capped at **2048 bytes** and cut on a rune boundary with the
+[truncation marker](#truncation-marker), so a process with an enormous argv
+(`ARG_MAX` can reach 2 MB) can't bloat the scrape. That bound is an entry in the
+[label size contract](#label-size-contract) and increments
+`gitlab_exporter_label_truncations_total{label="cmdline"}` when it fires.
+`environ`'s per-value cuts are **not** counted there — the counter tracks whole
+label values against the contract table, and `environ` is bounded by its own
+three-way rule instead.
 
 Every label value sourced from `/proc` (`name`, `cmdline`, `environ`, and the
 `ci_job_*` values) is also **UTF-8-sanitized**: invalid bytes are replaced with

@@ -45,6 +45,11 @@ const (
 	// the ceiling is stated here and asserted in the tests.
 	maxMarkerLen = len(truncEllipsis) + len("[len=") + truncMaxLenDigits +
 		len(";sha256=") + truncFingerprintLen + len("]")
+	// maxEnvironMarkerLen is the worst-case size of environTruncMarker, which
+	// carries the same length+fingerprint payload as maxMarkerLen but replaces
+	// the value body instead of following it.
+	maxEnvironMarkerLen = len("[TRUNCATED;len=") + truncMaxLenDigits +
+		len(";sha256=") + truncFingerprintLen + len("]")
 	// minLabelBytes is the floor for an operator-supplied limit. Below the
 	// marker's own worst-case size, truncation stops bounding anything: the
 	// result is longer than the limit, and what survives is mostly marker rather
@@ -60,17 +65,25 @@ const (
 //
 // It copies rather than mutating: MaxLabelBytes is package state shared by
 // every collector in the process, and an override belongs to the one collector
-// the config was loaded for. Overrides are expected to have passed
-// validateMaxLabelBytes already, so unknown names cannot enlarge the table.
+// the config was loaded for.
+//
+// It re-checks each override rather than trusting validateMaxLabelBytes to have
+// run. LoadConfig validates, but NewProcessCollectorWithConfig is exported and
+// accepts any *Config, and the failure mode of a non-positive limit is
+// fail-OPEN: truncateWithFingerprint reads max <= 0 as "no limit configured"
+// and passes the value through, silently disabling the very bound the operator
+// was configuring. An unknown name is dropped for the same reason it cannot be
+// applied — it would widen the table past the published contract.
 func mergedMaxLabelBytes(overrides map[string]int) map[string]int {
 	out := make(map[string]int, len(MaxLabelBytes))
 	for label, limit := range MaxLabelBytes {
 		out[label] = limit
 	}
 	for label, limit := range overrides {
-		if _, ok := out[label]; ok {
-			out[label] = limit
+		if _, ok := out[label]; !ok || limit < minLabelBytes {
+			continue
 		}
+		out[label] = limit
 	}
 	return out
 }
@@ -96,11 +109,6 @@ func truncateWithFingerprint(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
 	}
-	// Hash the ORIGINAL, before cutting — the fingerprint has to identify the
-	// value that was lost, not the prefix that survived.
-	sum := sha256.Sum256([]byte(s))
-	fingerprint := hex.EncodeToString(sum[:])[:truncFingerprintLen]
-
 	// Walk back off a partial rune: MustNewConstMetric panics on invalid UTF-8,
 	// and that panic fires on the registry's gather goroutine, crashing the
 	// whole exporter.
@@ -108,22 +116,44 @@ func truncateWithFingerprint(s string, max int) string {
 	for i > 0 && !utf8.RuneStart(s[i]) {
 		i--
 	}
+	// Hash the ORIGINAL, before cutting — the fingerprint has to identify the
+	// value that was lost, not the prefix that survived.
 	return s[:i] + truncEllipsis + "[len=" + strconv.Itoa(len(s)) +
-		";sha256=" + fingerprint + "]"
+		";sha256=" + fingerprint(s) + "]"
 }
 
-// truncationObserver is notified every time boundLabel actually cuts a value.
-// It exists so the counter can live on ProcessCollector — which is what owns
-// registration, and an unregistered counter reports nothing — while boundLabel
-// stays a pure function usable without a registry.
+// environTruncMarker replaces an over-long environ value ENTIRELY — body
+// included — while still carrying the original length and fingerprint.
+//
+// environ is the one label composed of arbitrary, operator-unknown key/value
+// pairs, and length alone is a secret signal there: isSensitivePair only
+// recognises token-shaped values (isTokenCharset rejects anything with braces,
+// quotes, colons or newlines), so a JSON service-account blob, a PEM body or a
+// connection string falls through unless its KEY hits the denylist. Emitting a
+// prefix of those would publish credential material to every scraper, which is
+// why an over-long environ value gets no prefix at all. Bounded labels with a
+// known, non-secret shape (name, cmdline, ci_*) keep their prefix via
+// truncateWithFingerprint.
+//
+// The result is always shorter than maxEnvironValueLen for any value that
+// reaches it, so it can only shrink the joined label.
+func environTruncMarker(s string) string {
+	return "[TRUNCATED;len=" + strconv.Itoa(len(s)) +
+		";sha256=" + fingerprint(s) + "]"
+}
+
+// fingerprint returns the leading hex chars of sha256(s) used by both markers.
+func fingerprint(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:truncFingerprintLen]
+}
+
+// truncationObserver is notified every time boundLabelWith actually cuts a
+// value. It exists so the counter can live on ProcessCollector — which is what
+// owns registration, and an unregistered counter reports nothing — while
+// boundLabelWith stays a pure function usable without a registry.
 type truncationObserver interface {
 	observeTruncation(label string)
-}
-
-// boundLabel applies the default MaxLabelBytes contract to one label value.
-// Use boundLabelWith when a collector carries operator overrides.
-func boundLabel(name, value string, obs ...truncationObserver) string {
-	return boundLabelWith(MaxLabelBytes, name, value, obs...)
 }
 
 // boundLabelWith applies a limit table to one label value. A label with no
@@ -132,21 +162,21 @@ func boundLabel(name, value string, obs ...truncationObserver) string {
 //
 // Ordering is fixed and must not change: sanitizeLabelValue first (make the
 // value valid UTF-8), then redact, then bound. Bounding invalid UTF-8 makes the
-// rune walk-back meaningless.
+// rune walk-back meaningless — strings.ToValidUTF8 expands each bad byte to a
+// 3-byte U+FFFD, so sanitizing after the cut pushes the result back past the
+// limit.
 //
-// Callers that can observe truncation should pass one: cutting a label value
-// is a silent, lossy event, and cmdline proves it happens in production
-// unannounced.
-func boundLabelWith(limits map[string]int, name, value string, obs ...truncationObserver) string {
+// obs may be nil for callers with no registry (tests); every production path
+// passes the collector, because cutting a label value is a silent, lossy event
+// and cmdline proves it happens unannounced.
+func boundLabelWith(limits map[string]int, name, value string, obs truncationObserver) string {
 	max, ok := limits[name]
 	if !ok {
 		return value
 	}
 	bounded := truncateWithFingerprint(value, max)
-	if bounded != value {
-		for _, o := range obs {
-			o.observeTruncation(name)
-		}
+	if bounded != value && obs != nil {
+		obs.observeTruncation(name)
 	}
 	return bounded
 }

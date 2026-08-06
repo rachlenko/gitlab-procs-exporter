@@ -1,8 +1,9 @@
-# Extra environ redaction filters for the gitlab_process_info metric.
-# Each entry is a case-insensitive substring matched against the variable NAME;
-# any match renders that variable as NAME=[REDACTED]. See the project README
-# section "Adding sensitive-data filters". Edit and `kubectl rollout restart`
-# the DaemonSet to apply changes (config is read once at startup, fail-fast).
+# Config for the exporter's --config flag: extra environ redaction filters and
+# per-label size limits. Read once at startup, FAIL-FAST — an unreadable file, an
+# unknown label under max_label_bytes, or a limit below 49 bytes makes the pod
+# exit (CrashLoopBackOff); the error in `kubectl logs` names the offending key.
+# See the project README sections "Adding sensitive-data filters" and
+# "Label size contract". Edit and `kubectl rollout restart` the DaemonSet to apply.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -10,6 +11,17 @@ metadata:
   namespace: monitoring
 data:
   config.yaml: |
+    # Case-insensitive substrings matched against the variable NAME; any match
+    # renders that variable as NAME=[REDACTED] in the gitlab_process_info label.
     redact_key_substrings:
       - vault
       - internal_token
+
+    # Raise or lower individual entries of the published label size contract.
+    # Overridable names: name, cmdline, ci_job_name, ci_project_path,
+    # ci_job_id, ci_pipeline_id. Each override must be at least 49 bytes (the
+    # truncation marker's own size); omitted labels keep their default. Watch
+    # gitlab_exporter_label_truncations_total to see which limits are being hit.
+    # max_label_bytes:
+    #   ci_job_name: 512
+    #   ci_project_path: 512

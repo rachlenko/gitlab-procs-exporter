@@ -45,13 +45,7 @@ func LoadConfig(path string) (*Config, error) {
 // which is exactly the failure mode this contract exists to remove.
 func validateMaxLabelBytes(overrides map[string]int) error {
 	// Sorted so a config with several bad entries always reports the same one.
-	names := make([]string, 0, len(overrides))
-	for name := range overrides {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
+	for _, name := range sortedKeys(overrides) {
 		if _, ok := MaxLabelBytes[name]; !ok {
 			return fmt.Errorf("max_label_bytes: unknown label %q (the contract covers: %s)",
 				name, strings.Join(contractLabelNames(), ", "))
@@ -71,12 +65,18 @@ func validateMaxLabelBytes(overrides map[string]int) error {
 // contractLabelNames lists the overridable labels, sorted, for error messages —
 // a rejected typo is only actionable if it says what the alternatives are.
 func contractLabelNames() []string {
-	names := make([]string, 0, len(MaxLabelBytes))
-	for name := range MaxLabelBytes {
-		names = append(names, name)
+	return sortedKeys(MaxLabelBytes)
+}
+
+// sortedKeys returns m's keys in a stable order, so error messages naming one
+// entry of a map don't vary between runs.
+func sortedKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
-	sort.Strings(names)
-	return names
+	sort.Strings(keys)
+	return keys
 }
 
 // normalizeSubstrings trims and lowercases each entry, dropping empties.

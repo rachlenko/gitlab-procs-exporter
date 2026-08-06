@@ -22,7 +22,7 @@ func TestBoundLabelPassesThroughUnderLimit(t *testing.T) {
 	value := strings.Repeat("a", limit-1)
 
 	// Act
-	got := boundLabel("name", value)
+	got := boundLabelWith(MaxLabelBytes, "name", value, nil)
 
 	// Assert
 	if got != value {
@@ -36,7 +36,7 @@ func TestBoundLabelPassesThroughAtExactLimit(t *testing.T) {
 	limit := MaxLabelBytes["name"]
 	value := strings.Repeat("a", limit)
 
-	got := boundLabel("name", value)
+	got := boundLabelWith(MaxLabelBytes, "name", value, nil)
 
 	if got != value {
 		t.Errorf("value of exactly %d bytes must pass through unchanged, got %q", limit, got)
@@ -47,7 +47,7 @@ func TestBoundLabelTruncatesOverLimit(t *testing.T) {
 	limit := MaxLabelBytes["name"]
 	value := strings.Repeat("a", limit+1)
 
-	got := boundLabel("name", value)
+	got := boundLabelWith(MaxLabelBytes, "name", value, nil)
 
 	if got == value {
 		t.Fatal("value of limit+1 bytes must be truncated")
@@ -65,7 +65,7 @@ func TestBoundLabelUnknownNameUnchanged(t *testing.T) {
 	// business — silently bounding it would hide a missing table entry.
 	value := strings.Repeat("z", 64*1024)
 
-	got := boundLabel("environ", value)
+	got := boundLabelWith(MaxLabelBytes, "environ", value, nil)
 
 	if got != value {
 		t.Errorf("unknown label name must pass through unchanged, got %d bytes want %d", len(got), len(value))
@@ -73,7 +73,7 @@ func TestBoundLabelUnknownNameUnchanged(t *testing.T) {
 }
 
 func TestBoundLabelEmptyString(t *testing.T) {
-	if got := boundLabel("name", ""); got != "" {
+	if got := boundLabelWith(MaxLabelBytes, "name", "", nil); got != "" {
 		t.Errorf("empty value must stay empty with no marker, got %q", got)
 	}
 	if got := truncateWithFingerprint("", 128); got != "" {
@@ -132,8 +132,8 @@ func TestBoundLabelIsDeterministic(t *testing.T) {
 	// the series churns and the TSDB grows a new series per scrape.
 	value := strings.Repeat("d", 4096)
 
-	first := boundLabel("name", value)
-	second := boundLabel("name", value)
+	first := boundLabelWith(MaxLabelBytes, "name", value, nil)
+	second := boundLabelWith(MaxLabelBytes, "name", value, nil)
 
 	if first != second {
 		t.Errorf("truncation must be deterministic: %q != %q", first, second)
@@ -148,8 +148,8 @@ func TestBoundLabelDistinguishesSharedPrefixes(t *testing.T) {
 	a := prefix + "alpha"
 	b := prefix + "beta"
 
-	gotA := boundLabel("name", a)
-	gotB := boundLabel("name", b)
+	gotA := boundLabelWith(MaxLabelBytes, "name", a, nil)
+	gotB := boundLabelWith(MaxLabelBytes, "name", b, nil)
 
 	if gotA == gotB {
 		t.Errorf("values differing past the cut must produce different markers, both gave %q", gotA)
@@ -165,7 +165,7 @@ func TestBoundLabelNeverExceedsCeiling(t *testing.T) {
 		for _, r := range runes {
 			value := strings.Repeat(r, max+16)
 
-			got := boundLabel(label, value)
+			got := boundLabelWith(MaxLabelBytes, label, value, nil)
 
 			if ceiling := max + maxMarkerLen; len(got) > ceiling {
 				t.Errorf("bounded %q is %d bytes, ceiling %d", label, len(got), ceiling)

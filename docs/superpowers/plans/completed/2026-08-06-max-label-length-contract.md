@@ -386,3 +386,40 @@ sample will miss the outliers the contract exists to catch.
 Cross-check against `prod_tsdb.json` → `memoryInBytesByLabelName`, which is
 Prometheus's own accounting of which label costs the most index memory. If the audit
 and the TSDB disagree on the ranking, trust the TSDB and re-derive the limits.
+
+---
+
+## Post-implementation review corrections
+
+Applied after the plan's own tasks were complete; recorded here because two of
+them changed decisions the plan had made.
+
+1. **`environ` per-value truncation drops the body (reverses Task 4 for this
+   label).** Task 4 replaced `[TRUNCATED]` with prefix + fingerprint everywhere.
+   For `environ` that was an information-disclosure regression the plan did not
+   weigh: on `main` an over-long value was hidden *whole*, so length alone acted
+   as a second, independent secret heuristic. `isSensitivePair` only recognises
+   token-*shaped* values, so a JSON service-account key, a PEM body or a
+   connection string falls through, and the new prefix published its first 256
+   bytes. `environ` now uses `environTruncMarker` — length and fingerprint, no
+   body — while `name`/`cmdline`/`ci_*` keep their prefix as planned. Side
+   effect: the marker is ~40 B rather than ~305 B, so Task 4's warning that
+   `environ_truncated` would flip sooner is largely moot.
+
+2. **`kuber_*`'s `job_name` was outside the contract.** The plan's goal was
+   "every label the exporter emits", but `KubeCollector` emitted `CI_JOB_NAME`
+   raw — no `sanitizeLabelValue`, no bound — and it shares a registry, and so a
+   gather goroutine, with `ProcessCollector`. Invalid UTF-8 there would have
+   crashed the exporter. Now sanitized and bounded at the `ci_job_name` limit.
+
+3. Smaller fixes: `mergedMaxLabelBytes` no longer trusts its caller to have run
+   `validateMaxLabelBytes` (the failure mode was fail-*open*); the dead
+   `boundLabel`/`ciJobLabelValues` default-table wrappers were deleted along with
+   the unreachable zero-value-collector fallbacks; the truncation counter's
+   per-gather semantics are now stated in its `Help` and the README; tests were
+   added for the sanitize-before-bound ordering, the `ci_*` observer wiring, and
+   the validation-error determinism.
+
+**Still open:** the `ci_*` limits remain unvalidated estimates — see the section
+above. That caveat is now also carried in `README.md`'s label size contract
+table so it stays visible outside this file.
