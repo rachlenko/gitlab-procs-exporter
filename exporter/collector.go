@@ -423,7 +423,10 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
 	}
 
-	// Emitted last so this scrape's own truncations are already counted.
+	// Emitted last so this collector's own cuts this scrape are already counted.
+	// KubeCollector shares this counter but gathers independently, so an
+	// in-cluster job_name cut can land after this snapshot and show up one scrape
+	// late. The counter is a yes/no signal, not a per-scrape total.
 	pc.truncations.Collect(ch)
 }
 

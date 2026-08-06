@@ -178,17 +178,25 @@ func TestBoundLabelNeverExceedsCeiling(t *testing.T) {
 }
 
 func TestBoundLabelContractCoversEveryBoundedLabel(t *testing.T) {
-	// Derived from the collector's OWN label set, not a hand-copied list: the
+	// Derived from the collectors' OWN label sets, not a hand-copied list: the
 	// failure this guards is "someone adds a label and forgets the table entry",
 	// and a hardcoded want[] only catches that if they also remember to edit the
-	// test — the same act of remembering. Adding a label to infoLabelNames now
-	// fails here until it is either bounded or exempted below, on purpose.
+	// test — the same act of remembering. Adding a label to infoLabelNames or
+	// kubeLabelNames now fails here until it is either bounded or exempted below,
+	// on purpose.
+	//
+	// Both registered collectors are covered: KubeCollector shares the registry
+	// (and so the gather goroutine) with ProcessCollector, and it is the one that
+	// already shipped an unbounded label once.
 	exempt := map[string]string{
 		"pid":               "exporter-generated decimal PID, structurally bounded",
 		"environ":           "composed blob with its own maxEnvironVars/ValueLen/Bytes bound",
 		"environ_truncated": `exporter-generated, always "0" or "1"`,
+		"job_name": "same CI_JOB_NAME source as ci_job_name, so KubeCollector bounds it " +
+			"under that entry rather than owning one — see kube_collector.go",
 	}
-	for _, label := range infoLabelNames() {
+	emittedLabels := append(infoLabelNames(), kubeLabelNames()...)
+	for _, label := range emittedLabels {
 		max, ok := MaxLabelBytes[label]
 		if !ok {
 			if _, ok := exempt[label]; ok {
@@ -204,8 +212,8 @@ func TestBoundLabelContractCoversEveryBoundedLabel(t *testing.T) {
 	}
 	// An exemption that no longer names a real label is stale and would hide a
 	// genuinely unbounded label if that name were reused.
-	emitted := make(map[string]bool, len(infoLabelNames()))
-	for _, label := range infoLabelNames() {
+	emitted := make(map[string]bool, len(emittedLabels))
+	for _, label := range emittedLabels {
 		emitted[label] = true
 	}
 	for label := range exempt {

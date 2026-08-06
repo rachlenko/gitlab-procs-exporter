@@ -294,10 +294,12 @@ question it answers well.
 
 The six overridable contract labels are pre-initialised at `0`, so an absent
 series means "this exporter does not instrument that label", not "nothing was
-truncated"; an alert on it cannot silently never fire. Two labels are bounded
-but not counted here: `environ`, which is bounded by its own three-way rule
-rather than by the contract table, and the in-cluster `job_name`, which rides on
-a separate collector.
+truncated"; an alert on it cannot silently never fire. One label is bounded but
+not counted here: `environ`, which is bounded by its own three-way rule rather
+than by the contract table. The in-cluster `job_name` *is* counted, under
+`label="ci_job_name"` — it rides on a separate collector but shares that limit,
+so a `ci_job_name` spike on an in-cluster exporter can originate from either the
+per-process metrics or `kuber_*`.
 
 ```promql
 # Labels being cut on this host, and how often
@@ -607,7 +609,9 @@ applies. Rejected:
   Under that floor a cut value ends up *longer* than its limit and is almost
   entirely marker. (The built-in `ci_job_id` / `ci_pipeline_id` defaults of 32
   sit below the floor on purpose: they bound ~7-byte numeric values and never
-  truncate. An override has no such context, so it is held to the floor.)
+  truncate. An override has no such context, so it is held to the floor —
+  restating either default as an override is therefore rejected and aborts
+  startup. To keep a default, omit its key rather than writing it out.)
 - a value **above 8143 bytes**, the ceiling. A cut value carries its 49-byte
   marker *past* the limit, so anything higher can emit a label value over the
   **8192-byte** `label_value_length_limit` this exporter is deployed with — and

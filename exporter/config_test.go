@@ -297,6 +297,11 @@ func TestMergedMaxLabelBytesIgnoresUnvalidatedOverrides(t *testing.T) {
 		"zero":             0,
 		"negative":         -1,
 		"below the marker": minLabelBytes - 1,
+		// The ceiling branch fails the other way — not fail-open, but a value the
+		// downstream label_value_length_limit rejects, which costs the WHOLE
+		// scrape. LoadConfig rejects it earlier, so this is the only test that
+		// reaches mergedMaxLabelBytes' own ceiling check.
+		"above the ceiling": maxLabelBytesCeiling + 1,
 	}
 	for name, limit := range tests {
 		t.Run(name, func(t *testing.T) {

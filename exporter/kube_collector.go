@@ -29,7 +29,7 @@ type KubeCollector struct {
 // must share that label's operator override too, or the same source value gets
 // emitted at two different limits on the same registry.
 func NewKubeCollector(store *HistoryStore, kube *KubeStore) *KubeCollector {
-	labels := []string{"job_name"}
+	labels := kubeLabelNames()
 	return &KubeCollector{
 		store:         store,
 		kube:          kube,
@@ -69,6 +69,17 @@ func NewKubeCollectorWithConfig(store *HistoryStore, kube *KubeStore, cfg *Confi
 		kc.obs = pc
 	}
 	return kc
+}
+
+// kubeLabelNames is this collector's full label set. It is a function rather
+// than an inline literal for the same reason infoLabelNames is: the contract
+// guard test asserts that every label this exporter emits is either bounded or
+// explicitly exempted, and it can only do that over an enumerable set. This
+// collector is precisely where that failure already happened once — job_name
+// shipped raw, unsanitized and unbounded — so a second kuber_* label must not
+// be able to pass through unnoticed.
+func kubeLabelNames() []string {
+	return []string{"job_name"}
 }
 
 // Describe implements prometheus.Collector.
