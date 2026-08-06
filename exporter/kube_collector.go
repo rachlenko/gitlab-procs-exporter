@@ -8,16 +8,32 @@ type KubeCollector struct {
 	store *HistoryStore
 	kube  *KubeStore
 
+	// maxLabelBytes is this collector's own copy of the limit table, for the
+	// same reason ProcessCollector keeps one: reading the package-level
+	// MaxLabelBytes live on the gather goroutine races with any writer to it,
+	// and a concurrent map read/write is an unrecoverable fatal error that takes
+	// the exporter down.
+	maxLabelBytes map[string]int
+	// obs counts the cuts this collector makes. nil is supported (tests without
+	// a registry); production wires the ProcessCollector so job_name truncation
+	// lands in gitlab_exporter_label_truncations_total instead of vanishing.
+	obs truncationObserver
+
 	cpuDesc *prometheus.Desc
 	memDesc *prometheus.Desc
 }
 
-// NewKubeCollector creates a KubeCollector.
+// NewKubeCollector creates a KubeCollector with the DEFAULT label-size
+// contract and no truncation counting. See NewKubeCollectorWithConfig, which is
+// what production uses — job_name shares CI_JOB_NAME with ci_job_name, so it
+// must share that label's operator override too, or the same source value gets
+// emitted at two different limits on the same registry.
 func NewKubeCollector(store *HistoryStore, kube *KubeStore) *KubeCollector {
 	labels := []string{"job_name"}
 	return &KubeCollector{
-		store: store,
-		kube:  kube,
+		store:         store,
+		kube:          kube,
+		maxLabelBytes: mergedMaxLabelBytes(nil),
 		cpuDesc: prometheus.NewDesc(
 			"kuber_cpu_request",
 			"CPU request of the GitLab CI job pod, in cores.",
@@ -29,6 +45,30 @@ func NewKubeCollector(store *HistoryStore, kube *KubeStore) *KubeCollector {
 			labels, nil,
 		),
 	}
+}
+
+// NewKubeCollectorWithConfig creates a KubeCollector that honours the
+// operator's max_label_bytes overrides and counts its truncations.
+//
+// pc is the ProcessCollector this collector shares a registry with; it owns the
+// truncation counter. Cuts here are counted under "ci_job_name", not
+// "job_name", because that is the limit being applied — a separate series would
+// suggest a separate limit an operator could tune, and there isn't one.
+//
+// Both arguments are optional: a nil cfg means "defaults", and a nil pc means
+// "don't count". The nil check on pc is load-bearing — assigning a nil
+// *ProcessCollector straight into the interface field would yield a non-nil
+// interface holding a nil pointer, so the nil guard in boundLabelWith would not
+// fire and the counter increment would panic on the gather goroutine.
+func NewKubeCollectorWithConfig(store *HistoryStore, kube *KubeStore, cfg *Config, pc *ProcessCollector) *KubeCollector {
+	kc := NewKubeCollector(store, kube)
+	if cfg != nil {
+		kc.maxLabelBytes = mergedMaxLabelBytes(cfg.MaxLabelBytes)
+	}
+	if pc != nil {
+		kc.obs = pc
+	}
+	return kc
 }
 
 // Describe implements prometheus.Collector.
@@ -52,8 +92,8 @@ func (kc *KubeCollector) Collect(ch chan<- prometheus.Metric) {
 		// ProcessCollector, so a bad byte here takes the whole exporter down.
 		// Bounding happens BEFORE the dedup key so two over-long names that
 		// would collapse to one label set can't produce duplicate series.
-		jobName := boundLabelWith(MaxLabelBytes, "ci_job_name",
-			sanitizeLabelValue(p.Environ["CI_JOB_NAME"]), nil)
+		jobName := boundLabelWith(kc.maxLabelBytes, "ci_job_name",
+			sanitizeLabelValue(p.Environ["CI_JOB_NAME"]), kc.obs)
 		if jobName == "" {
 			continue
 		}

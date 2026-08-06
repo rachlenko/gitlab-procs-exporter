@@ -362,6 +362,16 @@ reports it. An explicit contract needs an explicit signal.
       more often did **not** fire on this host (1 → 1); it remains plausible on hosts with many
       truncated variables and is documented in the README either way.
 
+      > ⚠️ **The byte figures above are stale — they measure a build that was reverted.** This run
+      > predates post-implementation corrections #1 and #3 below, which stopped `environ` from
+      > keeping a prefix and then dropped its fingerprint too. The `environ` marker the code now
+      > ships is ~20 B, not the ~290 B this paragraph attributes the +10.6 KB to, so the real
+      > exposition growth is roughly an order of magnitude smaller and is dominated by `cmdline`
+      > rather than `environ`. **Do not size retention or scrape budgets from these numbers** —
+      > re-run the before/after scrape against the current binary first. The series counts (0
+      > delta on both rows) and the marker counts are unaffected: those measure `cmdline`, whose
+      > behaviour the corrections did not touch.
+
 ---
 
 ## Validating the limits against production
@@ -391,7 +401,7 @@ and the TSDB disagree on the ranking, trust the TSDB and re-derive the limits.
 
 ## Post-implementation review corrections
 
-Applied after the plan's own tasks were complete; recorded here because two of
+Applied after the plan's own tasks were complete; recorded here because several of
 them changed decisions the plan had made.
 
 1. **`environ` per-value truncation drops the body (reverses Task 4 for this
@@ -401,10 +411,11 @@ them changed decisions the plan had made.
    as a second, independent secret heuristic. `isSensitivePair` only recognises
    token-*shaped* values, so a JSON service-account key, a PEM body or a
    connection string falls through, and the new prefix published its first 256
-   bytes. `environ` now uses `environTruncMarker` — length and fingerprint, no
-   body — while `name`/`cmdline`/`ci_*` keep their prefix as planned. Side
-   effect: the marker is ~40 B rather than ~305 B, so Task 4's warning that
-   `environ_truncated` would flip sooner is largely moot.
+   bytes. `environ` now uses `environTruncMarker` — no body — while
+   `name`/`cmdline`/`ci_*` keep their prefix as planned. Side effect: the marker
+   is far smaller than the ~305 B a prefix scheme produces, so Task 4's warning
+   that `environ_truncated` would flip sooner is largely moot. (Correction #4
+   later dropped the fingerprint from this marker too.)
 
 2. **`kuber_*`'s `job_name` was outside the contract.** The plan's goal was
    "every label the exporter emits", but `KubeCollector` emitted `CI_JOB_NAME`
@@ -419,6 +430,37 @@ them changed decisions the plan had made.
    per-gather semantics are now stated in its `Help` and the README; tests were
    added for the sanitize-before-bound ordering, the `ci_*` observer wiring, and
    the validation-error determinism.
+
+4. **`environTruncMarker` no longer fingerprints the value (completes #1).**
+   Correction #1 dropped the body because a value reaching that path is one the
+   heuristics could *not* classify, so it has to be assumed to be credential
+   material — but the marker kept an unsalted `sha256` prefix of that same
+   value. On an endpoint every scraper can read, that is an unrate-limited
+   offline oracle: a guessable structured secret (a connection string off a
+   known template) is confirmed against the digest. Publishing a verifiable
+   commitment to a value you refused to show gives back most of what refusing it
+   protected. The marker is now `[TRUNCATED;len=<N>]`. Cost: two distinct
+   over-long values of the same length render identically, so `environ` gives up
+   the distinguishability `name`/`cmdline`/`ci_*` keep — which is also a
+   cardinality saving, and the right trade only where the value may be a secret.
+
+5. **`kuber_*`'s `job_name` ignored `max_label_bytes` overrides (completes
+   #2).** Correction #2 routed `job_name` through the contract, but through the
+   package-level default table with a nil observer — so an operator raising
+   `ci_job_name` moved `ci_job_name` and not `job_name`, leaving one
+   `CI_JOB_NAME` value rendered two ways on one registry and silently breaking
+   any PromQL joining `kuber_*` to `gitlab_process_*` on job name, while the cut
+   went uncounted. This is the exact silently-ignored-limit failure the contract
+   exists to prevent, reintroduced by the change that closed it. `KubeCollector`
+   now carries its own merged table and observer via
+   `NewKubeCollectorWithConfig`, wired from `main.go`; cuts count under
+   `label="ci_job_name"`, since that is the limit being applied. Owning a copy
+   of the table also removes the live read of the exported, mutable
+   `MaxLabelBytes` from the gather goroutine, where a concurrent write would be
+   an unrecoverable fatal error. The pre-existing test could not catch this — it
+   read `MaxLabelBytes["ci_job_name"]` itself, so it passed either way;
+   `TestKubeCollectorHonoursJobNameOverride` asserts the override is applied and
+   that the two labels agree.
 
 **Still open:** the `ci_*` limits remain unvalidated estimates — see the section
 above. That caveat is now also carried in `README.md`'s label size contract

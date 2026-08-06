@@ -154,3 +154,99 @@ func TestKubeCollectorSanitizesAndBoundsJobName(t *testing.T) {
 		})
 	}
 }
+
+// job_name and ci_job_name are the SAME CI_JOB_NAME value emitted on one
+// registry, so an operator override of ci_job_name has to move both. If it
+// moves only ci_job_name, the two labels carry different renderings of one
+// value and any PromQL joining kuber_* to gitlab_process_* on job name
+// silently matches nothing — a query that worked before the override stops
+// returning rows, with no error anywhere to explain it.
+//
+// The test above cannot catch this: it reads MaxLabelBytes["ci_job_name"]
+// directly, so it passes whether the collector honours the override or ignores
+// it. This one asserts the override is actually applied, and that the cut is
+// counted rather than dropped on the floor.
+func TestKubeCollectorHonoursJobNameOverride(t *testing.T) {
+	const override = 512
+	jobName := strings.Repeat("j", 400) // over the 256 default, under the override
+
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp: time.Now(), PID: 300, Name: "ruby", PodUID: "pod-ccc",
+		Environ: map[string]string{"CI_JOB_NAME": jobName}, IsActive: true,
+	})
+	ks := NewKubeStore()
+	ks.Replace([]KubePodInfo{{UID: "pod-ccc", CPURequest: 0.5, MemRequest: 1048576}})
+
+	cfg := &Config{MaxLabelBytes: map[string]int{"ci_job_name": override}}
+	pc := NewProcessCollectorWithConfig(store, cfg)
+	kc := NewKubeCollectorWithConfig(store, ks, cfg, pc)
+
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(kc)
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	var got string
+	for _, mf := range mfs {
+		if mf.GetName() != "kuber_cpu_request" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "job_name" {
+					got = lp.GetValue()
+				}
+			}
+		}
+	}
+	if got != jobName {
+		t.Errorf("job_name must follow the ci_job_name override to %d and pass a %d-byte "+
+			"value through untruncated; got %d bytes (%q)", override, len(jobName), len(got), got)
+	}
+
+	// Same value on the process side, so the two must agree exactly — that
+	// agreement is the whole point of sharing the limit.
+	if bounded := pc.boundLabel("ci_job_name", jobName); bounded != got {
+		t.Errorf("job_name %q disagrees with ci_job_name %q for the same source value", got, bounded)
+	}
+
+	// A cut below the override must still be counted. Re-run past the override
+	// so truncation actually fires.
+	long := strings.Repeat("k", override+1)
+	store2 := NewHistoryStore()
+	store2.AddSample(ProcessSample{
+		Timestamp: time.Now(), PID: 301, Name: "ruby", PodUID: "pod-ccc",
+		Environ: map[string]string{"CI_JOB_NAME": long}, IsActive: true,
+	})
+	pc2 := NewProcessCollectorWithConfig(store2, cfg)
+	kc2 := NewKubeCollectorWithConfig(store2, ks, cfg, pc2)
+	if n := testutil.CollectAndCount(kc2, "kuber_cpu_request"); n != 1 {
+		t.Fatalf("expected 1 series, got %d", n)
+	}
+	if n := testutil.ToFloat64(pc2.truncations.WithLabelValues("ci_job_name")); n == 0 {
+		t.Error("kuber_* job_name truncation was not counted; the documented " +
+			"'watch gitlab_exporter_label_truncations_total' workflow reports nothing for it")
+	}
+}
+
+// A KubeCollector built without a ProcessCollector must not panic when it cuts
+// a value. Passing a nil *ProcessCollector into an interface field yields a
+// non-nil interface holding a nil pointer, which slips past the nil guard in
+// boundLabelWith and panics on the gather goroutine — taking the exporter down.
+func TestKubeCollectorNilObserverDoesNotPanic(t *testing.T) {
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp: time.Now(), PID: 302, Name: "ruby", PodUID: "pod-ddd",
+		Environ: map[string]string{"CI_JOB_NAME": strings.Repeat("j", 4096)}, IsActive: true,
+	})
+	ks := NewKubeStore()
+	ks.Replace([]KubePodInfo{{UID: "pod-ddd", CPURequest: 0.5, MemRequest: 1}})
+
+	kc := NewKubeCollectorWithConfig(store, ks, nil, nil)
+	if n := testutil.CollectAndCount(kc, "kuber_cpu_request"); n != 1 {
+		t.Errorf("expected 1 series, got %d", n)
+	}
+}

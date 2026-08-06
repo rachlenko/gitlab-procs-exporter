@@ -8,8 +8,16 @@ import (
 )
 
 // MaxLabelBytes is the published contract for every label value this exporter
-// emits: no label value ever exceeds its limit, and anything longer is
-// truncated informatively (see truncateWithFingerprint) rather than dropped.
+// emits: anything longer than its limit is truncated informatively (see
+// truncateWithFingerprint) rather than dropped.
+//
+// The bound is limit+maxMarkerLen, NOT limit: a truncated value carries a
+// marker appended past the cut, worst case 49 bytes (see maxMarkerLen). Size a
+// downstream label_value_length_limit against limit+maxMarkerLen, never against
+// the raw limit — Prometheus rejects the WHOLE scrape when a label value
+// exceeds that limit, so getting this wrong turns one long value into total
+// data loss. The margin dominates for the small limits: ci_job_id at 32 yields
+// a worst case of 81.
 //
 // Limits are BYTE counts, never rune counts — Prometheus and the exposition
 // format are byte-oriented, and so is the index memory a label value costs.
@@ -46,10 +54,9 @@ const (
 	maxMarkerLen = len(truncEllipsis) + len("[len=") + truncMaxLenDigits +
 		len(";sha256=") + truncFingerprintLen + len("]")
 	// maxEnvironMarkerLen is the worst-case size of environTruncMarker, which
-	// carries the same length+fingerprint payload as maxMarkerLen but replaces
-	// the value body instead of following it.
-	maxEnvironMarkerLen = len("[TRUNCATED;len=") + truncMaxLenDigits +
-		len(";sha256=") + truncFingerprintLen + len("]")
+	// replaces the value body instead of following it and carries the length
+	// alone — no fingerprint, see environTruncMarker for why.
+	maxEnvironMarkerLen = len("[TRUNCATED;len=") + truncMaxLenDigits + len("]")
 	// minLabelBytes is the floor for an operator-supplied limit. Below the
 	// marker's own worst-case size, truncation stops bounding anything: the
 	// result is longer than the limit, and what survives is mostly marker rather
@@ -123,23 +130,36 @@ func truncateWithFingerprint(s string, max int) string {
 }
 
 // environTruncMarker replaces an over-long environ value ENTIRELY — body
-// included — while still carrying the original length and fingerprint.
+// included — carrying only the original length.
 //
 // environ is the one label composed of arbitrary, operator-unknown key/value
-// pairs, and length alone is a secret signal there: isSensitivePair only
-// recognises token-shaped values (isTokenCharset rejects anything with braces,
-// quotes, colons or newlines), so a JSON service-account blob, a PEM body or a
-// connection string falls through unless its KEY hits the denylist. Emitting a
-// prefix of those would publish credential material to every scraper, which is
-// why an over-long environ value gets no prefix at all. Bounded labels with a
-// known, non-secret shape (name, cmdline, ci_*) keep their prefix via
-// truncateWithFingerprint.
+// pairs, and being over-long is itself a secret signal there: isSensitivePair
+// only recognises token-shaped values (isTokenCharset rejects anything with
+// braces, quotes, colons or newlines), so a JSON service-account blob, a PEM
+// body or a connection string falls through unless its KEY hits the denylist.
+// Emitting a prefix of those would publish credential material to every
+// scraper, which is why an over-long environ value gets no prefix at all.
+//
+// It carries no fingerprint either, and that is the same decision rather than a
+// separate one. The values reaching here are exactly the ones the heuristics
+// could NOT classify, so they must be assumed to be credential material; an
+// unsalted sha256 prefix of one is a commitment to it, and /metrics is readable
+// by every scraper. For a structured, low-entropy secret — a connection string
+// off a known template, a templated internal URL — that is an unrate-limited
+// offline oracle to confirm a guessed value against. Refusing the body but
+// publishing a verifiable digest of it would give back most of what dropping
+// the body was protecting. Length alone supports no such confirmation.
+//
+// Cost of dropping it: two distinct over-long values of the same length now
+// render identically, so environ loses the distinguishability that
+// truncateWithFingerprint preserves. That is a real loss for debugging and a
+// cardinality WIN, and it is the right trade only here — labels with a known,
+// non-secret shape (name, cmdline, ci_*) keep both prefix and fingerprint.
 //
 // The result is always shorter than maxEnvironValueLen for any value that
 // reaches it, so it can only shrink the joined label.
 func environTruncMarker(s string) string {
-	return "[TRUNCATED;len=" + strconv.Itoa(len(s)) +
-		";sha256=" + fingerprint(s) + "]"
+	return "[TRUNCATED;len=" + strconv.Itoa(len(s)) + "]"
 }
 
 // fingerprint returns the leading hex chars of sha256(s) used by both markers.

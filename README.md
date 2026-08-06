@@ -231,7 +231,7 @@ enforces it for you.
 | `ci_pipeline_id` | 32 | all 12 per-process metrics | Numeric. |
 | `cmdline` | 2048 | `gitlab_process_info` | `ARG_MAX` can reach 2 MB; this cap **is** hit in practice. |
 | `environ` | 8192 | `gitlab_process_info` | Composed blob with its own three-way bound — see [Hardened environ scrubbing](#hardened-environ-scrubbing). |
-| `job_name` | 256 | `kuber_cpu_request`, `kuber_memory_request` | In-cluster only. Same `CI_JOB_NAME` source as `ci_job_name`, so it shares that limit and follows a `ci_job_name` override. Its cuts are not counted separately. |
+| `job_name` | 256 | `kuber_cpu_request`, `kuber_memory_request` | In-cluster only. Same `CI_JOB_NAME` source as `ci_job_name`, so it shares that limit and follows a `ci_job_name` override. Its cuts are counted under `label="ci_job_name"`, not under a `job_name` series — that is the limit being applied, and a separate series would imply a separate limit to tune. |
 
 > **The four `ci_*` limits are estimates, not measurements.** They were derived
 > on an audit host that was running no CI jobs, so every `ci_*` value observed
@@ -823,11 +823,11 @@ or fail the scrape:
 
 - at most **100 variables** (sorted by key) are emitted;
 - any single value longer than **256 bytes** is replaced **entirely** by a
-  marker carrying the original byte length and fingerprint —
-  `[TRUNCATED;len=768;sha256=f5af23e90f7a]` — so the label stays valid UTF-8 and
-  "too long" stays distinguishable from "secret";
-- `[REDACTED]` **wins over truncation**, so the marker never carries a
-  fingerprint of a value already known to be a secret;
+  marker carrying the original byte length and nothing else —
+  `[TRUNCATED;len=768]` — so the label stays valid UTF-8 and "too long" stays
+  distinguishable from "secret";
+- `[REDACTED]` **wins over truncation**, so a value already known to be a secret
+  is named as one rather than reported as a length;
 - the joined label is capped at a hard **8192-byte** ceiling, stopping at a
   variable boundary once it would be exceeded.
 
@@ -840,13 +840,26 @@ or fail the scrape:
 > of one of those is credential material published to every scraper, so an
 > over-long environ value contributes no body at all. The other bounded labels
 > have a known, non-secret shape and keep their prefix.
+>
+> **It carries no fingerprint either**, and that follows from the same premise.
+> The values that reach this path are exactly the ones the heuristics could not
+> classify, so they have to be assumed to be credential material — and an
+> unsalted `sha256` prefix of a secret, published on an endpoint every scraper
+> can read, is an unrate-limited offline oracle: an attacker who can guess a
+> structured, low-entropy value (a connection string off a known template, a
+> templated internal URL) confirms the guess against the digest. Refusing the
+> body but publishing a verifiable commitment to it would hand back most of what
+> refusing the body was protecting. The cost is that two distinct over-long
+> values of the same length now render identically, so `environ` gives up the
+> distinguishability that `name`/`cmdline`/`ci_*` keep — which is also a
+> cardinality saving, and the right trade only where the value may be a secret.
 
 When the variable **list** is left incomplete — variables dropped because there
 were more than 100 or because the byte ceiling was hit — the companion
 `environ_truncated` label is set to `"1"`. Per-value `[REDACTED]` substitutions
 and per-value truncation keep the variable present and do **not** set that flag.
 
-> **Behaviour change:** the marker is ~40 bytes typical against 11 for the old
+> **Behaviour change:** the marker is ~20 bytes typical against 11 for the old
 > bare `[TRUNCATED]`, so a process with many over-long environment values reaches
 > the 8192-byte ceiling marginally sooner and `environ_truncated` can flip to
 > `"1"` where it previously did not. Because the marker replaces the value rather

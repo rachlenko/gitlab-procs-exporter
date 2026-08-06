@@ -131,7 +131,7 @@ func main() {
 			log.Printf("kube: disabled (kubelet client init failed: %v)", err)
 		} else {
 			go startKubeScraper(kubeStore, client, *scrapeInterval)
-			prometheus.MustRegister(exporter.NewKubeCollector(store, kubeStore))
+			prometheus.MustRegister(exporter.NewKubeCollectorWithConfig(store, kubeStore, cfg, collector))
 			log.Printf("kube: enabled, polling kubelet at %s", client.BaseURL())
 		}
 	}

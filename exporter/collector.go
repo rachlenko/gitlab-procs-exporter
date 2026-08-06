@@ -271,8 +271,8 @@ const (
 	maxEnvironVars = 100
 	// maxEnvironValueLen caps a single value's length in bytes; a longer value
 	// is replaced WHOLE by environTruncMarker, which carries the original
-	// length and a fingerprint but none of the body. The marker is always
-	// shorter than this cap, so a truncated value never exceeds it.
+	// length but none of the body and no fingerprint of it. The marker is
+	// always shorter than this cap, so a truncated value never exceeds it.
 	maxEnvironValueLen = 256
 	// maxEnvironBytes is a hard ceiling on the joined label. It's a conservative,
 	// self-imposed cap that keeps label values small and predictable; 100 vars *
@@ -324,12 +324,13 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 	for _, k := range keys {
 		val := sanitizeLabelValue(environ[k])
 		switch {
-		// Arm order is load-bearing: redaction must win so the marker never
-		// carries a fingerprint of a known secret.
+		// Arm order is load-bearing: redaction must win so a known secret is
+		// named as one rather than reported as a length.
 		case isSensitivePair(k, val, pc.extraKeySubstrings):
 			val = "[REDACTED]"
-		// Length alone is a secret signal in environ — see environTruncMarker
-		// for why the body is dropped here rather than truncated to a prefix.
+		// Being over-long is itself a secret signal in environ — see
+		// environTruncMarker for why the body is dropped here rather than
+		// truncated to a prefix, and why no fingerprint replaces it.
 		case len(val) > maxEnvironValueLen:
 			val = environTruncMarker(val)
 		}

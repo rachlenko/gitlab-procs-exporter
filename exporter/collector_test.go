@@ -282,10 +282,18 @@ func TestScrubEnvironNeverLeaksPrefixOfOverLongValue(t *testing.T) {
 	if want := "GCP_SA=" + environTruncMarker(blob); out != want {
 		t.Errorf("expected the value replaced whole by %q, got %q", want, out)
 	}
-	// The marker still has to identify what was dropped, or truncation is
+	// The marker still has to say what was dropped, or truncation is
 	// information-destroying again.
-	if !strings.Contains(out, fmt.Sprintf("len=%d;sha256=", len(blob))) {
-		t.Errorf("marker must carry the original length and fingerprint, got %q", out)
+	if !strings.Contains(out, fmt.Sprintf("len=%d", len(blob))) {
+		t.Errorf("marker must carry the original length, got %q", out)
+	}
+	// ...but NOT a fingerprint of it. This value reached the length fallback
+	// precisely because the heuristics could not classify it, so it must be
+	// assumed to be credential material; an unsalted digest published on
+	// /metrics is an offline oracle to confirm a guessed value against, which
+	// gives back most of what dropping the body was protecting.
+	if strings.Contains(out, "sha256=") {
+		t.Errorf("environ marker must not fingerprint an unclassified value: %q", out)
 	}
 }
 
@@ -318,13 +326,13 @@ func TestScrubEnvironBounds(t *testing.T) {
 	pc := NewProcessCollector(NewHistoryStore())
 
 	// Over-long value is replaced WHOLE by a marker carrying the ORIGINAL length
-	// and a fingerprint — no prefix of the body survives.
+	// and nothing else — no prefix of the body, no digest of it.
 	longVal := strings.Repeat("x", maxEnvironValueLen+1)
 	out, trunc := pc.scrubEnviron(map[string]string{"BIG": longVal})
 	if want := "BIG=" + environTruncMarker(longVal); out != want {
 		t.Errorf("expected over-long value replaced by %q, got %q", want, out)
 	}
-	if !strings.Contains(out, fmt.Sprintf("len=%d;sha256=", len(longVal))) {
+	if !strings.Contains(out, fmt.Sprintf("len=%d", len(longVal))) {
 		t.Errorf("marker must report the original length %d, got %q", len(longVal), out)
 	}
 	if trunc {
@@ -390,7 +398,7 @@ func TestScrubEnvironBounds(t *testing.T) {
 	if trunc {
 		t.Error("per-value markers drop no variable, so the list is complete and the flag must stay unset")
 	}
-	if got := strings.Count(out, ";sha256="); got != maxEnvironVars {
+	if got := strings.Count(out, "[TRUNCATED;len="); got != maxEnvironVars {
 		t.Errorf("expected %d markers in the joined label, got %d", maxEnvironVars, got)
 	}
 	if strings.Contains(out, strings.Repeat("z", maxEnvironValueLen)) {
@@ -423,7 +431,7 @@ func TestScrubEnvironAtLimits(t *testing.T) {
 	overVal := strings.Repeat("x", maxEnvironValueLen+1)
 	out, trunc = pc.scrubEnviron(map[string]string{"OK": overVal})
 	val := strings.TrimPrefix(out, "OK=")
-	if !strings.HasSuffix(val, "]") || !strings.Contains(val, ";sha256=") {
+	if !strings.HasSuffix(val, "]") || !strings.Contains(val, "[TRUNCATED;len=") {
 		t.Errorf("value of maxEnvironValueLen+1 bytes must carry the marker, got %q", out)
 	}
 	if len(val) > maxEnvironValueLen+maxMarkerLen {
@@ -494,7 +502,7 @@ func TestScrubEnvironUTF8Safe(t *testing.T) {
 		t.Errorf("environ label is not valid UTF-8: %q", out)
 	}
 	// The marker reports the original byte length, not a rune count.
-	if !strings.Contains(out, fmt.Sprintf("len=%d;sha256=", len(multiByte))) {
+	if !strings.Contains(out, fmt.Sprintf("len=%d", len(multiByte))) {
 		t.Errorf("marker must report the original length %d, got %q", len(multiByte), out)
 	}
 
