@@ -195,6 +195,35 @@ func TestLoadConfigMaxLabelBytesRejected(t *testing.T) {
 			wantSubs: "parse config",
 		},
 		{
+			// yaml.v2 coerces a float into an int field by TRUNCATION, so a
+			// map[string]int field would accept this as 512 — the operator asked
+			// for one limit and a different one would apply, silently.
+			name:     "fractional",
+			yaml:     "max_label_bytes:\n  ci_job_name: 512.9\n",
+			wantSubs: "not an integer byte count",
+		},
+		{
+			// Same coercion, and this one does not even look like a mistake:
+			// 1e3 reads as "1000 bytes" but is a float scalar in YAML.
+			name:     "exponent",
+			yaml:     "max_label_bytes:\n  ci_job_name: 1e3\n",
+			wantSubs: "not an integer byte count",
+		},
+		{
+			name:     "boolean",
+			yaml:     "max_label_bytes:\n  name: true\n",
+			wantSubs: "not an integer byte count",
+		},
+		{
+			// Wider than int64, so yaml hands back a uint64. It IS an integer, so
+			// it must be reported as over the ceiling — the actionable reason —
+			// rather than as a non-integer, which would send the operator looking
+			// for a typo that isn't there.
+			name:     "integer wider than int64",
+			wantSubs: "ceiling",
+			yaml:     "max_label_bytes:\n  cmdline: 10000000000000000000\n",
+		},
+		{
 			// The dangerous typo: singular, parses fine under non-strict
 			// unmarshal, and yields NO redaction filters on a healthy-looking pod.
 			name:     "misspelled top-level redact key",

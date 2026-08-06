@@ -483,6 +483,21 @@ them changed decisions the plan had made.
    is restated — a salted digest is still a within-process *equality* oracle, and
    on an assumed-secret value that leaks shared credentials and rotation timing.
 
+7. **A float override no longer loads as a truncated int.** `Config.MaxLabelBytes`
+   was a plain `map[string]int`, and yaml.v2 coerces a float scalar into an int
+   field by **truncation**: `ci_job_name: 512.9` loaded as 512 and `1e3` as 1000,
+   silently. Task 6's own README bullet already listed "a non-integer value"
+   among the rejected inputs, so the documented behaviour and the real behaviour
+   disagreed — on exactly the silently-altered-setting failure the whole contract
+   exists to remove, and `1e3` reading as 1000 does not even look like a mistake.
+   The field is now a `LabelByteLimits` named type whose `UnmarshalYAML` decodes
+   through `interface{}`, so each scalar's YAML type survives long enough to be
+   checked; a non-integer fails the load naming the entry. Integers wider than
+   `int` are clamped rather than rejected, so a 20-digit limit is reported as
+   over the ceiling (the actionable reason) instead of as a non-integer, which it
+   is not. Three cases added to `TestLoadConfigMaxLabelBytesRejected`
+   (fractional, exponent, boolean) plus one pinning the clamp.
+
 **Still open:** the `ci_*` limits remain unvalidated estimates — see the section
 above. That caveat is now also carried in `README.md`'s label size contract
 table so it stays visible outside this file.

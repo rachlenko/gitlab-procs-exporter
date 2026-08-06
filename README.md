@@ -619,7 +619,9 @@ applies. Rejected:
 
 - an **unknown label name**, including a typo (`ci_jobname`) and `environ`
   (bounded separately, not here);
-- a **non-integer** value;
+- a **non-integer** value — including the two that *look* numeric, `512.9` and
+  `1e3`. YAML calls both floats, and the naive decode would truncate them to 512
+  and 1000: a limit you did not write, applied without a word;
 - a value **`<= 0`**;
 - a value **below 49 bytes**, the worst-case size of the truncation marker.
   Under that floor a cut value ends up *longer* than its limit and is almost
