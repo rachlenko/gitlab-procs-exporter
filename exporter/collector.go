@@ -38,10 +38,13 @@ func ciJobLabelNames() []string {
 // of these values inherits the MaxLabelBytes contract: the ci_* labels ride on
 // all 12 metrics, so an oversized value multiplies 12x into the TSDB index.
 // Order is fixed: sanitize first (make it valid UTF-8), then bound.
-func ciJobLabelValues(environ map[string]string) []string {
+//
+// obs is optional so callers without a collector (tests, future call sites)
+// still get the contract; a collector passes itself to count the cuts.
+func ciJobLabelValues(environ map[string]string, obs ...truncationObserver) []string {
 	vals := make([]string, len(ciJobLabelKeys))
 	for i, k := range ciJobLabelKeys {
-		vals[i] = boundLabel(k.label, sanitizeLabelValue(environ[k.env]))
+		vals[i] = boundLabel(k.label, sanitizeLabelValue(environ[k.env]), obs...)
 	}
 	return vals
 }
@@ -67,6 +70,13 @@ type ProcessCollector struct {
 	ioReadSyscallsSelfDesc  *prometheus.Desc
 	ioWriteSyscallsSelfDesc *prometheus.Desc
 	infoDesc                *prometheus.Desc
+
+	// truncations counts how often the MaxLabelBytes contract actually cut a
+	// value, keyed by label name. Truncation is otherwise silent — cmdline is
+	// being cut in production today and nothing says so. It is emitted through
+	// Describe/Collect below rather than registered separately, so it rides on
+	// whatever registry the collector itself is registered on.
+	truncations *prometheus.CounterVec
 }
 
 // syscallHelp explains, once, that these counters are syscalls and not IOPS.
@@ -79,9 +89,24 @@ const syscallHelp = " These are read(2)/write(2) call counts, NOT block-device I
 func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *ProcessCollector {
 	commonLabels := append([]string{"pid", "name"}, ciJobLabelNames()...)
 
+	truncations := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gitlab_exporter_label_truncations_total",
+		Help: "Label values cut by the MaxLabelBytes contract, by label name. " +
+			"A rising rate means the limit for that label is too low for this " +
+			"host's data, and the affected series carry a fingerprint marker " +
+			"instead of their full value.",
+	}, []string{"label"})
+	// Initialize every contract label at zero so a scrape distinguishes "nothing
+	// was truncated" from "this label is not instrumented" — an absent series
+	// reads as the latter and makes an alert on it silently never fire.
+	for label := range MaxLabelBytes {
+		truncations.WithLabelValues(label)
+	}
+
 	return &ProcessCollector{
 		store:              store,
 		extraKeySubstrings: normalizeSubstrings(extraKeySubstrings),
+		truncations:        truncations,
 		cpuDesc: prometheus.NewDesc(
 			"gitlab_process_cpu_seconds_total",
 			"Total user and system CPU time spent in seconds.",
@@ -151,6 +176,16 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 			append([]string{"pid", "name", "cmdline", "environ", "environ_truncated"}, ciJobLabelNames()...), nil,
 		),
 	}
+}
+
+// observeTruncation implements truncationObserver: boundLabel calls it once per
+// value it actually cut. CounterVec is safe for concurrent use, which matters
+// because Collect runs on the registry's gather goroutine.
+func (pc *ProcessCollector) observeTruncation(label string) {
+	if pc.truncations == nil {
+		return
+	}
+	pc.truncations.WithLabelValues(label).Inc()
 }
 
 // keyMatchesAny reports whether key (case-insensitively) contains any of the
@@ -293,6 +328,7 @@ func (pc *ProcessCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- pc.ioReadSyscallsSelfDesc
 	ch <- pc.ioWriteSyscallsSelfDesc
 	ch <- pc.infoDesc
+	pc.truncations.Describe(ch)
 }
 
 // Collect implements the prometheus.Collector interface.
@@ -301,8 +337,8 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 
 	for _, p := range processes {
 		pidStr := fmt.Sprintf("%d", p.PID)
-		name := boundLabel("name", sanitizeLabelValue(p.Name))
-		ciVals := ciJobLabelValues(p.Environ)
+		name := boundLabel("name", sanitizeLabelValue(p.Name), pc)
+		ciVals := ciJobLabelValues(p.Environ, pc)
 		labels := append([]string{pidStr, name}, ciVals...)
 
 		// Emit core stats
@@ -324,10 +360,13 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		if environTruncated {
 			truncatedLabel = "1"
 		}
-		cmdline := boundLabel("cmdline", sanitizeLabelValue(p.CmdLine))
+		cmdline := boundLabel("cmdline", sanitizeLabelValue(p.CmdLine), pc)
 		infoLabels := append([]string{pidStr, name, cmdline, environ, truncatedLabel}, ciVals...)
 		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
 	}
+
+	// Emitted last so this scrape's own truncations are already counted.
+	pc.truncations.Collect(ch)
 }
 
 // IsSecretKey checks if the key name suggests it holds sensitive credentials.

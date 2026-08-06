@@ -202,14 +202,25 @@ currently unbounded.
 Truncation is invisible today — `cmdline` is being cut in production and nothing
 reports it. An explicit contract needs an explicit signal.
 
-- [ ] **Step 1: Write the failing test** — after collecting a process with an over-long
+- [x] **Step 1: Write the failing test** — after collecting a process with an over-long
   `name`, `gitlab_exporter_label_truncations_total{label="name"}` is ≥ 1.
-- [ ] **Step 2: Run tests — MUST FAIL**
-- [ ] **Step 3:** Add a `*prometheus.CounterVec` on `ProcessCollector`, incremented from
+  `TestCollectCountsLabelTruncations` reads the counter out of `reg.Gather()`, never off the
+  collector field, so a counter that is incremented but not emitted still fails. It also pins
+  that an untruncated label (`cmdline`) is present at 0 and that every `MaxLabelBytes` label
+  has a series. `TestLabelTruncationsAccumulateAcrossScrapes` pins counter (not gauge)
+  semantics across two gathers.
+- [x] **Step 2: Run tests — MUST FAIL** (`gitlab_exporter_label_truncations_total was not gathered`)
+- [x] **Step 3:** Add a `*prometheus.CounterVec` on `ProcessCollector`, incremented from
   `boundLabel`. **It must be registered on the same registry and emitted from
   `Describe`/`Collect`** — a `CounterVec` created but never registered silently reports nothing.
-- [ ] **Step 4: Run tests — MUST PASS**
-- [ ] **Step 5:** `make fmt && make lint`
+  `boundLabel`/`ciJobLabelValues` gained a variadic `truncationObserver`, so the primitive stays
+  a pure function usable without a registry while the collector passes itself. Children are
+  pre-initialized at 0 for every contract label, and `Collect` emits the vec last so the
+  current scrape's own cuts are already counted.
+- [x] **Step 4: Run tests — MUST PASS** (`go test -race -cover ./exporter/` → 91.6% of statements)
+- [x] **Step 5:** `make fmt && make lint` (gofmt clean + `go vet` clean; `goimports` and
+  `golangci-lint` binaries are not installed in this environment, so `make fmt`/`make lint`
+  abort on the missing tool)
 
 ---
 

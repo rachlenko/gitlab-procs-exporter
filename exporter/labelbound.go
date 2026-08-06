@@ -84,6 +84,14 @@ func truncateWithFingerprint(s string, max int) string {
 		";sha256=" + fingerprint + "]"
 }
 
+// truncationObserver is notified every time boundLabel actually cuts a value.
+// It exists so the counter can live on ProcessCollector — which is what owns
+// registration, and an unregistered counter reports nothing — while boundLabel
+// stays a pure function usable without a registry.
+type truncationObserver interface {
+	observeTruncation(label string)
+}
+
 // boundLabel applies the MaxLabelBytes contract to one label value. A label
 // with no entry in the table passes through unchanged — silently bounding it
 // would hide the fact that the table is missing an entry.
@@ -91,10 +99,20 @@ func truncateWithFingerprint(s string, max int) string {
 // Ordering is fixed and must not change: sanitizeLabelValue first (make the
 // value valid UTF-8), then redact, then boundLabel. Bounding invalid UTF-8
 // makes the rune walk-back meaningless.
-func boundLabel(name, value string) string {
+//
+// Callers that can observe truncation should pass one: cutting a label value
+// is a silent, lossy event, and cmdline proves it happens in production
+// unannounced.
+func boundLabel(name, value string, obs ...truncationObserver) string {
 	max, ok := MaxLabelBytes[name]
 	if !ok {
 		return value
 	}
-	return truncateWithFingerprint(value, max)
+	bounded := truncateWithFingerprint(value, max)
+	if bounded != value {
+		for _, o := range obs {
+			o.observeTruncation(name)
+		}
+	}
+	return bounded
 }

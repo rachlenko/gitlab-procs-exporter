@@ -70,11 +70,22 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 	close(descChan)
 
 	descCount := 0
-	for range descChan {
+	sawTruncationDesc := false
+	for d := range descChan {
+		if strings.Contains(d.String(), "gitlab_exporter_label_truncations_total") {
+			sawTruncationDesc = true
+			continue
+		}
 		descCount++
 	}
 	if descCount != 12 {
-		t.Errorf("expected 12 metric descriptors, got %d", descCount)
+		t.Errorf("expected 12 process metric descriptors, got %d", descCount)
+	}
+	// The truncation counter is only ever scraped if it is described as well as
+	// collected — a CounterVec missing from Describe is dropped by a pedantic
+	// registry and reports nothing.
+	if !sawTruncationDesc {
+		t.Error("gitlab_exporter_label_truncations_total was not described")
 	}
 
 	// Test Collect
@@ -87,8 +98,11 @@ func TestCollectorDescribeAndCollect(t *testing.T) {
 	sawCPU := false
 
 	for m := range metricChan {
-		metricCount++
 		descStr := m.Desc().String()
+		if strings.Contains(descStr, "gitlab_exporter_label_truncations_total") {
+			continue // self-observability, not a per-process series
+		}
+		metricCount++
 		if strings.Contains(descStr, "gitlab_process_info") {
 			infoLabels = readMetricLabels(t, m)
 		}
@@ -575,6 +589,9 @@ func TestCollectBoundsNameAndCILabels(t *testing.T) {
 	metricCount := 0
 	checked := map[string]int{}
 	for m := range metricChan {
+		if strings.Contains(m.Desc().String(), "gitlab_exporter_label_truncations_total") {
+			continue // self-observability, not a per-process series
+		}
 		metricCount++
 		labels := readMetricLabels(t, m)
 		for name, limit := range MaxLabelBytes {
@@ -681,6 +698,102 @@ func TestCIJobLabelValuesBounded(t *testing.T) {
 		if !utf8.ValidString(v) {
 			t.Errorf("ciJobLabelValues emitted invalid UTF-8: %q", v)
 		}
+	}
+}
+
+// truncationCounts pulls gitlab_exporter_label_truncations_total out of a
+// gathered set as label -> value. It reads the GATHERED families rather than
+// the collector's own field on purpose: a CounterVec that is created but never
+// emitted from Describe/Collect silently reports nothing, and only the
+// registry can tell the two apart.
+func truncationCounts(t *testing.T, mfs []*dto.MetricFamily) map[string]float64 {
+	t.Helper()
+	const name = "gitlab_exporter_label_truncations_total"
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		out := make(map[string]float64, len(mf.GetMetric()))
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == "label" {
+					out[lp.GetValue()] = m.GetCounter().GetValue()
+				}
+			}
+		}
+		return out
+	}
+	t.Fatalf("%s was not gathered — the counter must be emitted from Describe/Collect", name)
+	return nil
+}
+
+// Truncation was invisible: cmdline is cut in production and nothing reported
+// it. An explicit contract needs an explicit signal, so every cut boundLabel
+// makes increments a counter keyed by label name.
+func TestCollectCountsLabelTruncations(t *testing.T) {
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        9184,
+		Name:       strings.Repeat("n", 4096),
+		CmdLine:    "runner exec", // short: must NOT count as a truncation
+		CreateTime: 400,
+		IsActive:   true,
+	})
+
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(NewProcessCollector(store))
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	got := truncationCounts(t, mfs)
+	if got["name"] < 1 {
+		t.Errorf("gitlab_exporter_label_truncations_total{label=\"name\"} is %v, want >= 1", got["name"])
+	}
+	// The series for an untruncated label must still exist at 0, or operators
+	// cannot tell "nothing was truncated" from "this label is not instrumented".
+	if v, ok := got["cmdline"]; !ok || v != 0 {
+		t.Errorf("expected {label=\"cmdline\"} present and 0, got %v (present=%v)", v, ok)
+	}
+	// Every label in the contract must be represented up front.
+	for label := range MaxLabelBytes {
+		if _, ok := got[label]; !ok {
+			t.Errorf("no truncation series for contract label %q", label)
+		}
+	}
+}
+
+// The counter is a counter: it accumulates across scrapes rather than being
+// reset or re-created per Collect, or a truncation seen between two scrapes
+// would vanish from rate() entirely.
+func TestLabelTruncationsAccumulateAcrossScrapes(t *testing.T) {
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        9185,
+		Name:       strings.Repeat("n", 4096),
+		CreateTime: 400,
+		IsActive:   true,
+	})
+
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(NewProcessCollector(store))
+
+	first, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	second, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	before := truncationCounts(t, first)["name"]
+	after := truncationCounts(t, second)["name"]
+	if after <= before {
+		t.Errorf("counter did not advance across scrapes: %v then %v", before, after)
 	}
 }
 
