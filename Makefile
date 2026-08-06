@@ -2,7 +2,12 @@
 TAG=$(shell git describe --tags --abbrev=0 --exact-match 2>/dev/null)
 BRANCH=$(if $(TAG),$(TAG),$(shell git rev-parse --abbrev-ref HEAD 2>/dev/null))
 HASH=$(shell git rev-parse --short=7 HEAD 2>/dev/null)
-TIMESTAMP=$(shell git log -1 --format=%ct HEAD 2>/dev/null | xargs -I{} date -u -r {} +%Y%m%dT%H%M%S)
+# Formatted by git itself rather than date(1): `date -r <epoch>` is BSD syntax,
+# and on GNU coreutils -r means "this file's mtime", so the old pipeline failed
+# with "No such file or directory" on every Linux build. It failed QUIETLY --
+# TIMESTAMP came out empty and the stamped revision kept a dangling separator
+# (v0.0.21-79148a7-), so released binaries reported a truncated version.
+TIMESTAMP=$(shell TZ=UTC git log -1 --date=format-local:%Y%m%dT%H%M%S --format=%cd HEAD 2>/dev/null)
 GIT_REV=$(shell printf "%s-%s-%s" "$(BRANCH)" "$(HASH)" "$(TIMESTAMP)")
 REV=$(if $(filter --,$(GIT_REV)),latest,$(GIT_REV))
 
@@ -39,8 +44,22 @@ test:
 lint:
 	golangci-lint run --max-issues-per-linter=0 --max-same-issues=0
 
-# Format go files and group imports
+# Install the developer tools fmt depends on. They are not vendored and not
+# needed to build or test, so this is a separate opt-in step.
+tools:
+	go install golang.org/x/tools/cmd/goimports@latest
+
+# Format go files and group imports.
+# The goimports check runs BEFORE gofmt on purpose: without it a machine missing
+# goimports still gets gofmt applied and then fails, leaving the tree
+# half-formatted and the error ("goimports: No such file or directory") saying
+# nothing about how to fix it.
 fmt:
+	@command -v goimports >/dev/null 2>&1 || { \
+	  echo "error: goimports not found; run 'make tools'"; \
+	  echo "       (it installs to $$(go env GOPATH)/bin — make sure that is on PATH)"; \
+	  exit 1; \
+	}
 	gofmt -s -w $$(find . -type f -name "*.go" -not -path "./vendor/*" -not -path "**/mocks/*")
 	goimports -w $$(find . -type f -name "*.go" -not -path "./vendor/*" -not -path "**/mocks/*")
 
@@ -89,4 +108,4 @@ release: test
 	 git push origin "$$version"; \
 	 echo "==> pushed $$version; CI will build the release artifacts"
 
-.PHONY: all build build-jobreport build-jobreport-web build-jobreport-linux test lint fmt race version release
+.PHONY: all build build-jobreport build-jobreport-web build-jobreport-linux test lint fmt tools race version release
