@@ -264,13 +264,28 @@ reports it. An explicit contract needs an explicit signal.
 
 **Files:** Modify `README.md`, `CLAUDE.md`, `config.example.yaml`
 
-- [ ] Document each label, its limit, and the marker format as part of the **input-data contract**.
-- [ ] Carry over Task 4's changelog callout — there is no `CHANGELOG` file in this repo, so the
+- [x] Document each label, its limit, and the marker format as part of the **input-data contract**.
+      New `README.md` "Label size contract" section: a per-label limit table (incl. which metrics
+      each rides on), the marker format with an exposition example, the determinism and
+      `limit + 49` ceiling guarantees, the cardinality trade-off, and the
+      `gitlab_exporter_label_truncations_total` counter with a PromQL example. The stale
+      `[TRUNCATED]` descriptions of `cmdline` and per-value `environ` were corrected, the
+      per-process metrics intro now names the four `ci_*` labels it had omitted entirely, and
+      `max_label_bytes` is documented under "Configuration file" (fail-fast rules and the
+      49-byte floor, incl. why the built-in numeric defaults of 32 sit below it).
+      One correction worth flagging: `environ`'s per-value cuts go through
+      `truncateWithFingerprint` directly, not `boundLabel`, so they do **not** increment the
+      counter — the README says so rather than implying the counter covers every cut.
+- [x] Carry over Task 4's changelog callout — there is no `CHANGELOG` file in this repo, so the
       `environ_truncated`-flips-sooner behaviour change belongs in the `README.md` notes here.
-- [ ] Add to `CLAUDE.md`, next to the existing `sanitizeLabelValue` rule: *every label value
+      Added as a blockquote under "Hardened environ scrubbing", noting it is visible in existing
+      dashboards and alerts on that label.
+- [x] Add to `CLAUDE.md`, next to the existing `sanitizeLabelValue` rule: *every label value
       MUST pass `sanitizeLabelValue()` then `boundLabel()` before reaching
       `MustNewConstMetric`.* The existing rule covers UTF-8 validity but not length.
-- [ ] Recommend defence in depth in the scrape config — the exporter's cap is self-imposed
+      Also pins the fixed ordering, that a new label needs a `MaxLabelBytes` entry or it silently
+      passes through unbounded, that limits are byte counts, and the `environ` exception.
+- [x] Recommend defence in depth in the scrape config — the exporter's cap is self-imposed
       and a future label could miss the table:
       ```yaml
       scrape_configs:
@@ -281,6 +296,11 @@ reports it. An explicit contract needs an explicit signal.
       Note the existing comment on `maxEnvironBytes`: an operator setting
       `label_value_length_limit` below 8192 must lower `maxEnvironBytes` too, or
       Prometheus rejects the whole scrape.
+      Placed in the contract section and cross-referenced from "2. Prometheus Configuration".
+      The caveat spells out that `maxEnvironBytes` is a build-time constant and is *not*
+      reachable via `max_label_bytes`, so going below 8192 requires a rebuild.
+      `config.example.yaml` already carried the full `max_label_bytes` block from Task 6; it
+      gained a pointer to the README section so the two do not drift into separate contracts.
 
 ---
 

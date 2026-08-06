@@ -31,6 +31,9 @@ redact_key_substrings:
 # "environ" is not overridable here: it is a composed blob with its own
 # three-way bound (100 vars / 256 bytes per value / 8192 bytes total).
 #
+# The full contract — every label, its limit, the marker format and the
+# recommended Prometheus-side limits — is in README.md, "Label size contract".
+#
 # max_label_bytes:
 #   ci_job_name: 512
 #   ci_project_path: 512
