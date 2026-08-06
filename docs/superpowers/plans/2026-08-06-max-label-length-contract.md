@@ -306,16 +306,61 @@ reports it. An explicit contract needs an explicit signal.
 
 ### Task 8: Full verification
 
-- [ ] `make fmt && make lint && make test`
-- [ ] Confirm coverage ≥ 80% on `exporter/`
-- [ ] Run the exporter and re-audit its `/metrics`; assert **no** label value exceeds its
-      limit and that `p99`/`max` for `name` and `ci_*` are now inside the table:
-      ```
-      python3 prom_label_audit.py expo metrics.txt --out series.ndjson
-      python3 prom_label_audit.py audit series.ndjson --cap 256
-      ```
-- [ ] Diff series count before/after to confirm the cardinality trade-off documented above
-      matches reality.
+- [x] `make fmt && make lint && make test` — `gofmt -s -l` reports no files and `go vet ./...`
+      is clean; `go clean -testcache && go test -race -coverprofile=… ./...` passes on every
+      package. `make fmt`/`make lint` themselves still abort in this environment on the missing
+      `goimports`/`golangci-lint` binaries, so the underlying checks were run directly.
+- [x] Confirm coverage ≥ 80% on `exporter/` — **92.1% of statements** (`-race`, whole-module run).
+      Other packages for the record: root 47.3%, `cmd/jobreport-web` 69.6%, `internal/jobreport`
+      56.9%, `deploy` 29.3% — all untouched by this plan.
+- [x] Run the exporter and re-audit its `/metrics`; assert **no** label value exceeds its
+      limit and that `p99`/`max` for `name` and `ci_*` are now inside the table.
+      `prom_label_audit.py` is not vendored in this repo, so the audit was reproduced with an
+      equivalent throwaway parser (unescapes each label value, measures **bytes**, compares
+      against `MaxLabelBytes` + `maxMarkerLen`) and deleted afterwards. Live scrape of 8,892
+      `gitlab_process_*` series on this host:
+
+      | label | count | p50 | p90 | p99 | max | limit | within |
+      |---|---|---|---|---|---|---|---|
+      | `name` | 8,892 | 13 | 24 | 33 | 39 | 128 | yes |
+      | `cmdline` | 741 | 0 | 441 | 1033 | 2081 | 2048 (+49 marker) | yes |
+      | `environ` | 741 | 0 | 1463 | 2265 | 3763 | 8192 | yes |
+      | `ci_job_id` / `ci_job_name` / `ci_pipeline_id` / `ci_project_path` | 8,892 | 0 | 0 | 0 | 0 | 32/256/32/256 | yes |
+
+      Result: **PASS — no label value exceeds its contract limit.** The `cmdline` max of 2081 is
+      a truncated value (2047-byte rune-aligned prefix + 34-byte marker), i.e. inside the stated
+      `limit + maxMarkerLen` ceiling rather than over the limit. Truncation is now visible in the
+      exposition: 39 fingerprint markers such as `…[len=3105;sha256=8b4b84f66618]`, and
+      `gitlab_exporter_label_truncations_total{label="cmdline"}` reached 3 while every other
+      contract label sat at 0.
+      **Caveat carried forward:** all four `ci_*` values are empty on this host (a workstation,
+      not a GitLab runner), exactly as the plan's measurement table predicted — so this run
+      confirms the `ci_*` labels are *routed through* the contract but does **not** validate the
+      256/32-byte limits against real data. See "Validating the limits against production" below;
+      that step still requires a runner and is not automatable here.
+- [x] Diff series count before/after to confirm the cardinality trade-off documented above
+      matches reality. The pre-change binary was built from the merge-base (`a9725d9`, `main`)
+      in a temporary worktree and scraped alongside this branch's binary:
+
+      | | before | after | delta |
+      |---|---|---|---|
+      | `gitlab_process_*` series | 8,892 | 8,892 | **0** |
+      | `gitlab_process_info` series | 741 | 741 | **0** |
+      | exposition bytes | 1,657,168 | 1,667,788 | +10,620 (+0.64%) |
+      | `[TRUNCATED]` markers | 39 | 0 | −39 |
+      | fingerprint markers | 0 | 39 | +39 |
+      | `environ_truncated="1"` | 1 | 1 | 0 |
+
+      **Cardinality cost measured at zero on this host.** The documented trade-off — fingerprints
+      preserve distinctness where `[TRUNCATED]` collapsed values into one string — costs nothing
+      here because every truncated value already rode a series made unique by `pid`, so collapsing
+      the label never collapsed a series. The trade-off is real but only bites when two processes
+      differ *solely* past the cut. The cost that did materialise is **bytes, not series**: +10.6 KB,
+      ~272 B per truncated value, dominated by `environ` per-value truncation now keeping a
+      256-byte prefix plus a 34-byte marker where it previously emitted a bare 11-byte
+      `[TRUNCATED]`. Task 4's warning that the fatter marker would push `environ_truncated` to 1
+      more often did **not** fire on this host (1 → 1); it remains plausible on hosts with many
+      truncated variables and is documented in the README either way.
 
 ---
 
