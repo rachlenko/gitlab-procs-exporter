@@ -3,8 +3,9 @@
 Example/template manifests that run `gitlab-procs-exporter` as a **DaemonSet**
 (one pod per Linux node) and emit the in-cluster `kuber_cpu_request` /
 `kuber_memory_request` metrics. See the project README sections
-[Kubernetes job-resource metrics](../../README.md#kubernetes-job-resource-metrics)
-and [Adding sensitive-data filters](../../README.md#adding-sensitive-data-filters).
+[Kubernetes job-resource metrics](../../README.md#kubernetes-job-resource-metrics),
+[Adding sensitive-data filters](../../README.md#adding-sensitive-data-filters)
+and [Label size contract](../../README.md#label-size-contract).
 
 ## Files
 
@@ -13,7 +14,7 @@ and [Adding sensitive-data filters](../../README.md#adding-sensitive-data-filter
 | `namespace.yaml` | `monitoring` namespace. |
 | `serviceaccount.yaml` | ServiceAccount the pods run as. |
 | `rbac.yaml` | ClusterRole + binding granting `get nodes/proxy` (kubelet `/pods` authz). |
-| `configmap.yaml` | `config.yaml` with `redact_key_substrings` (the redaction filters). |
+| `configmap.yaml` | `config.yaml` with `redact_key_substrings` (the redaction filters) and `max_label_bytes` (per-label size limits). |
 | `daemonset.yaml` | The DaemonSet itself. |
 | `service.yaml` | ClusterIP Service fronting the pods on the `metrics` port. |
 | `servicemonitor.yaml` | Prometheus Operator ServiceMonitor scraping that Service. |
@@ -43,16 +44,28 @@ kubectl -n monitoring exec ds/gitlab-procs-exporter -- \
 - **`rbac.yaml` (`get nodes/proxy`)** — lets the kubelet authorize the SA token
   for that request; without it the kube metrics stay empty.
 
-## Customize the redaction filters
+## Customize the config (redaction filters, label limits)
 
-Edit `configmap.yaml` (`redact_key_substrings` — case-insensitive substrings of
-the environment-variable **name**), then re-apply and restart so the change is
-picked up (config is read once at startup, fail-fast):
+Edit `configmap.yaml`:
+
+- `redact_key_substrings` — case-insensitive substrings of the
+  environment-variable **name**; any match renders that variable as
+  `NAME=[REDACTED]`.
+- `max_label_bytes` — raises or lowers individual entries of the
+  [label size contract](../../README.md#label-size-contract).
+
+Then re-apply and restart so the change is picked up (config is read once at
+startup, fail-fast):
 
 ```bash
 kubectl apply -k deploy/k8s/
 kubectl -n monitoring rollout restart ds/gitlab-procs-exporter
 ```
+
+⚠️ **Fail-fast means CrashLoopBackOff.** A missing or malformed file, an unknown
+label name under `max_label_bytes`, or a limit below 49 bytes aborts startup.
+After editing this ConfigMap, check `kubectl -n monitoring logs ds/gitlab-procs-exporter`
+— the error names the offending key.
 
 ## Prometheus scraping
 

@@ -11,6 +11,12 @@ metadata:
     # when serviceMonitorSelectorNilUsesHelmValues=false (matches all).
     release: kube-prometheus-stack
 spec:
+  # Defence in depth against the exporter's own label size contract missing an
+  # entry. Must stay AT OR ABOVE the exporter's 8192-byte environ ceiling: set
+  # it lower and Prometheus rejects the WHOLE scrape, not just the long label.
+  # See the README section "Defence in depth in the scrape config".
+  labelValueLengthLimit: 8192
+  labelLimit: 32
   selector:
     matchLabels:
       app: gitlab-procs-exporter

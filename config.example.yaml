@@ -7,3 +7,48 @@
 redact_key_substrings:
   - vault
   - internal_token
+
+# Per-label size limits, in BYTES of a single label value. Anything longer is
+# cut on a rune boundary and gets a marker carrying the original length and a
+# fingerprint: "<prefix>…[len=<N>;sha256=<12 hex>]". Every cut increments
+# gitlab_exporter_label_truncations_total{label="..."} — watch that counter to
+# tell whether a limit is too low for this host.
+#
+# Only the labels below may be overridden, and only with a value of at least 49
+# bytes (the worst-case marker size — below that a cut value would be longer
+# than the limit and almost entirely marker). An unknown label name, a
+# non-positive value, or a value under the floor aborts startup rather than
+# being ignored. Omitted entries keep their default.
+#
+# Defaults:
+#   name:            128   (on all 12 metrics)
+#   cmdline:         2048  (gitlab_process_info only; this cap is already hit)
+#   ci_job_name:     256   (on all 12 metrics)
+#   ci_project_path: 256   (on all 12 metrics)
+#   ci_job_id:       32    (on all 12 metrics; numeric)
+#   ci_pipeline_id:  32    (on all 12 metrics; numeric)
+#
+# Do NOT copy this block into max_label_bytes as-is: the two 32-byte numeric
+# defaults are BELOW the 49-byte override floor and are rejected, so a config
+# that only restates the defaults aborts startup. They are safe as defaults
+# (the values they bound are ~7 bytes and never truncate) but an override has
+# no such context. To keep a default, omit its key — there is no way to write
+# 32 back once you have raised it.
+#
+# "environ" is not overridable here: it is a composed blob with its own
+# three-way bound (100 vars / 256 bytes per value / 8192 bytes total).
+#
+# An override must be 49-8143 bytes. Below the floor a truncated value is mostly
+# marker; above the ceiling a truncated value (limit + its 49-byte marker) can
+# exceed the 8192-byte label_value_length_limit this exporter is deployed with,
+# and Prometheus then rejects the WHOLE scrape rather than the one value.
+#
+# Unknown top-level keys are rejected too: a misspelled "redact_key_substrings"
+# would otherwise parse fine and leave you with no redaction filters at all.
+#
+# The full contract — every label, its limit, the marker format and the
+# recommended Prometheus-side limits — is in README.md, "Label size contract".
+#
+# max_label_bytes:
+#   ci_job_name: 512
+#   ci_project_path: 512

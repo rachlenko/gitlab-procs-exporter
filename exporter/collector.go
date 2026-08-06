@@ -30,13 +30,21 @@ func ciJobLabelNames() []string {
 	return names
 }
 
-// ciJobLabelValues extracts the promoted CI label values from a process
+// ciJobLabelValuesWith extracts the promoted CI label values from a process
 // environ map. A missing variable yields "" — Prometheus treats an empty
 // label value as absent, so non-CI processes simply carry no job identity.
-func ciJobLabelValues(environ map[string]string) []string {
+//
+// Bounding happens here rather than at the call sites so that every consumer
+// of these values inherits the MaxLabelBytes contract: the ci_* labels ride on
+// all 12 metrics, so an oversized value multiplies 12x into the TSDB index.
+// Order is fixed: sanitize first (make it valid UTF-8), then bound.
+//
+// obs may be nil for callers without a collector (tests); a collector passes
+// itself so the cuts are counted.
+func ciJobLabelValuesWith(limits map[string]int, environ map[string]string, obs truncationObserver) []string {
 	vals := make([]string, len(ciJobLabelKeys))
 	for i, k := range ciJobLabelKeys {
-		vals[i] = sanitizeLabelValue(environ[k.env])
+		vals[i] = boundLabelWith(limits, k.label, sanitizeLabelValue(environ[k.env]), obs)
 	}
 	return vals
 }
@@ -48,6 +56,12 @@ type ProcessCollector struct {
 	// extraKeySubstrings are operator-configured key-name substrings that
 	// augment the built-in IsSecretKey denylist (normalized: lowercase, trimmed).
 	extraKeySubstrings []string
+
+	// maxLabelBytes is this collector's effective limit table: the published
+	// MaxLabelBytes contract merged with any operator overrides. It is always
+	// non-nil and is never the package map itself, so one configured collector
+	// cannot change the limits another one applies.
+	maxLabelBytes map[string]int
 
 	// Metric Descriptors
 	cpuDesc                 *prometheus.Desc
@@ -62,6 +76,13 @@ type ProcessCollector struct {
 	ioReadSyscallsSelfDesc  *prometheus.Desc
 	ioWriteSyscallsSelfDesc *prometheus.Desc
 	infoDesc                *prometheus.Desc
+
+	// truncations counts how often the MaxLabelBytes contract actually cut a
+	// value, keyed by label name. Truncation is otherwise silent — cmdline is
+	// being cut in production today and nothing says so. It is emitted through
+	// Describe/Collect below rather than registered separately, so it rides on
+	// whatever registry the collector itself is registered on.
+	truncations *prometheus.CounterVec
 }
 
 // syscallHelp explains, once, that these counters are syscalls and not IOPS.
@@ -70,13 +91,54 @@ const syscallHelp = " These are read(2)/write(2) call counts, NOT block-device I
 	"merges and splits them on the way to the disk, and the kernel does not attribute block operations " +
 	"back to the process that dirtied the page. Use node_disk_*_completed_total for true device IOPS."
 
-// NewProcessCollector creates and initializes a ProcessCollector.
+// NewProcessCollectorWithConfig creates a ProcessCollector from a loaded
+// Config, applying both operator knobs: the extra redaction substrings and the
+// MaxLabelBytes overrides. A nil cfg means "no config file" and yields the
+// defaults — not "no limits".
+//
+// It is a separate entry point rather than another parameter on
+// NewProcessCollector so the existing variadic call sites keep compiling
+// unchanged. cfg.MaxLabelBytes is expected to have come through LoadConfig,
+// which validates it; entries for unknown labels are ignored here rather than
+// silently widening the table.
+func NewProcessCollectorWithConfig(store *HistoryStore, cfg *Config) *ProcessCollector {
+	if cfg == nil {
+		return NewProcessCollector(store)
+	}
+	pc := NewProcessCollector(store, cfg.RedactKeySubstrings...)
+	pc.maxLabelBytes = mergedMaxLabelBytes(cfg.MaxLabelBytes)
+	return pc
+}
+
+// NewProcessCollector creates and initializes a ProcessCollector with the
+// default label-size contract. See NewProcessCollectorWithConfig to apply
+// operator overrides.
 func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *ProcessCollector {
 	commonLabels := append([]string{"pid", "name"}, ciJobLabelNames()...)
+
+	truncations := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gitlab_exporter_label_truncations_total",
+		Help: "Label values cut by the MaxLabelBytes contract, by label name. " +
+			"Counted per gather, not per distinct value: a scrape that cuts N " +
+			"label values adds N, so a single long-lived process keeps adding " +
+			"on every scrape and the rate scales with scrape frequency and with " +
+			"the number of scrapers. Read it as a yes/no signal, not a count of " +
+			"distinct values. Non-zero means the limit for that label is too low " +
+			"for this host's data, and the affected series carry a fingerprint " +
+			"marker instead of their full value.",
+	}, []string{"label"})
+	// Initialize every contract label at zero so a scrape distinguishes "nothing
+	// was truncated" from "this label is not instrumented" — an absent series
+	// reads as the latter and makes an alert on it silently never fire.
+	for label := range MaxLabelBytes {
+		truncations.WithLabelValues(label)
+	}
 
 	return &ProcessCollector{
 		store:              store,
 		extraKeySubstrings: normalizeSubstrings(extraKeySubstrings),
+		maxLabelBytes:      mergedMaxLabelBytes(nil),
+		truncations:        truncations,
 		cpuDesc: prometheus.NewDesc(
 			"gitlab_process_cpu_seconds_total",
 			"Total user and system CPU time spent in seconds.",
@@ -143,9 +205,34 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 		infoDesc: prometheus.NewDesc(
 			"gitlab_process_info",
 			"Metadata about the process including cmdline and parsed environ variables (scrubbed for secrets).",
-			append([]string{"pid", "name", "cmdline", "environ", "environ_truncated"}, ciJobLabelNames()...), nil,
+			infoLabelNames(), nil,
 		),
 	}
+}
+
+// infoLabelNames is gitlab_process_info's full label set, the widest one this
+// exporter emits. It is a function rather than an inline literal so the tests
+// can assert the MaxLabelBytes contract covers every name in it: a label added
+// here without a table entry silently passes through unbounded, and that is the
+// exact failure this contract exists to prevent.
+func infoLabelNames() []string {
+	return append([]string{"pid", "name", "cmdline", "environ", "environ_truncated"}, ciJobLabelNames()...)
+}
+
+// boundLabel applies this collector's limit table and counts what it cuts.
+func (pc *ProcessCollector) boundLabel(name, value string) string {
+	return boundLabelWith(pc.maxLabelBytes, name, value, pc)
+}
+
+// observeTruncation implements truncationObserver: boundLabelWith calls it once
+// per value it actually cut. CounterVec is safe for concurrent use, which
+// matters because Collect runs on the registry's gather goroutine.
+//
+// No nil guard: the constructor always sets truncations, and Describe/Collect
+// already dereference it unguarded. Guarding here and not there would leave the
+// zero-value collector half-supported, which is worse than not supporting it.
+func (pc *ProcessCollector) observeTruncation(label string) {
+	pc.truncations.WithLabelValues(label).Inc()
 }
 
 // keyMatchesAny reports whether key (case-insensitively) contains any of the
@@ -191,9 +278,10 @@ func RedactEnviron(environ map[string]string, extraKeySubstrings []string) map[s
 const (
 	// maxEnvironVars caps how many variables (sorted by key) are emitted.
 	maxEnvironVars = 100
-	// maxEnvironValueLen caps a single value's length in bytes; longer values
-	// are replaced with environValueTruncMarker whole (never byte-cut, so the
-	// label stays valid UTF-8).
+	// maxEnvironValueLen caps a single value's length in bytes; a longer value
+	// is replaced WHOLE by environTruncMarker, which carries the original
+	// length but none of the body and no fingerprint of it. The marker is
+	// always shorter than this cap, so a truncated value never exceeds it.
 	maxEnvironValueLen = 256
 	// maxEnvironBytes is a hard ceiling on the joined label. It's a conservative,
 	// self-imposed cap that keeps label values small and predictable; 100 vars *
@@ -202,15 +290,7 @@ const (
 	// (unlimited), so this cap — not that limit — is what keeps the value small;
 	// an operator who sets label_value_length_limit below 8192 must lower this too.
 	maxEnvironBytes = 8192
-	// maxCmdlineBytes caps the gitlab_process_info "cmdline" label; a process
-	// with an enormous argv (ARG_MAX can reach 2MB) must not blow up the
-	// scrape the way an unbounded environ could.
-	maxCmdlineBytes = 2048
 )
-
-// environValueTruncMarker replaces a value longer than maxEnvironValueLen. It's
-// distinct from "[REDACTED]" so "too long" is distinguishable from "secret".
-const environValueTruncMarker = "[TRUNCATED]"
 
 // sanitizeLabelValue replaces invalid UTF-8 bytes with the Unicode
 // replacement character. MustNewConstMetric panics on invalid UTF-8, and a
@@ -224,20 +304,6 @@ func sanitizeLabelValue(v string) string {
 	return strings.ToValidUTF8(v, string(utf8.RuneError))
 }
 
-// boundCmdline caps a valid-UTF-8 cmdline at maxCmdlineBytes, cutting at a
-// rune boundary and appending environValueTruncMarker so truncation is
-// visible. Input must already be sanitized (valid UTF-8).
-func boundCmdline(s string) string {
-	if len(s) <= maxCmdlineBytes {
-		return s
-	}
-	i := maxCmdlineBytes
-	for i > 0 && !utf8.RuneStart(s[i]) {
-		i--
-	}
-	return s[:i] + environValueTruncMarker
-}
-
 // scrubEnviron renders the environ map as a comma-joined "k=v" string,
 // redacting any pair whose key or value looks sensitive (see isSensitivePair)
 // and bounding the total size (see maxEnviron*).
@@ -246,7 +312,7 @@ func boundCmdline(s string) string {
 // means exactly one thing: the variable LIST is incomplete — one or more
 // variables were entirely omitted, either because there were more than
 // maxEnvironVars of them or because the maxEnvironBytes ceiling was reached.
-// It is deliberately NOT set by [REDACTED] or by per-value [TRUNCATED]: those
+// It is deliberately NOT set by [REDACTED] or by per-value truncation: those
 // keep the variable present (only its value changes), so the list is complete.
 func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, bool) {
 	// Sort keys so the gitlab_process_info "environ" label is stable across
@@ -267,10 +333,15 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 	for _, k := range keys {
 		val := sanitizeLabelValue(environ[k])
 		switch {
+		// Arm order is load-bearing: redaction must win so a known secret is
+		// named as one rather than reported as a length.
 		case isSensitivePair(k, val, pc.extraKeySubstrings):
 			val = "[REDACTED]"
+		// Being over-long is itself a secret signal in environ — see
+		// environTruncMarker for why the body is dropped here rather than
+		// truncated to a prefix, and why no fingerprint replaces it.
 		case len(val) > maxEnvironValueLen:
-			val = environValueTruncMarker
+			val = environTruncMarker(val)
 		}
 		pair := fmt.Sprintf("%s=%s", sanitizeLabelValue(k), val)
 
@@ -278,11 +349,20 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 		if b.Len() > 0 {
 			sep = len(", ")
 		}
-		// Stop at a pair boundary once the ceiling would be exceeded, so the
+		// Skip at a pair boundary once the ceiling would be exceeded, so the
 		// label is always valid UTF-8 and never over maxEnvironBytes.
+		//
+		// Skip rather than stop: only the VALUE is capped (maxEnvironValueLen),
+		// never the key, and the kernel allows env strings up to 128KB. One
+		// pathological key big enough to blow the ceiling on its own would
+		// otherwise end the loop on the first iteration and emit an EMPTY environ
+		// — dropping every other variable on the process, including the ones being
+		// debugged. Keys are sorted, so which variables that costs is arbitrary.
+		// Continuing keeps every pair that still fits; truncated already says the
+		// list is incomplete, which is equally true either way.
 		if b.Len()+sep+len(pair) > maxEnvironBytes {
 			truncated = true
-			break
+			continue
 		}
 		if sep > 0 {
 			b.WriteString(", ")
@@ -306,6 +386,7 @@ func (pc *ProcessCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- pc.ioReadSyscallsSelfDesc
 	ch <- pc.ioWriteSyscallsSelfDesc
 	ch <- pc.infoDesc
+	pc.truncations.Describe(ch)
 }
 
 // Collect implements the prometheus.Collector interface.
@@ -314,8 +395,8 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 
 	for _, p := range processes {
 		pidStr := fmt.Sprintf("%d", p.PID)
-		name := sanitizeLabelValue(p.Name)
-		ciVals := ciJobLabelValues(p.Environ)
+		name := pc.boundLabel("name", sanitizeLabelValue(p.Name))
+		ciVals := ciJobLabelValuesWith(pc.maxLabelBytes, p.Environ, pc)
 		labels := append([]string{pidStr, name}, ciVals...)
 
 		// Emit core stats
@@ -337,10 +418,16 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		if environTruncated {
 			truncatedLabel = "1"
 		}
-		cmdline := boundCmdline(sanitizeLabelValue(p.CmdLine))
+		cmdline := pc.boundLabel("cmdline", sanitizeLabelValue(p.CmdLine))
 		infoLabels := append([]string{pidStr, name, cmdline, environ, truncatedLabel}, ciVals...)
 		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
 	}
+
+	// Emitted last so this collector's own cuts this scrape are already counted.
+	// KubeCollector shares this counter but gathers independently, so an
+	// in-cluster job_name cut can land after this snapshot and show up one scrape
+	// late. The counter is a yes/no signal, not a per-scrape total.
+	pc.truncations.Collect(ch)
 }
 
 // IsSecretKey checks if the key name suggests it holds sensitive credentials.

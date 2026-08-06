@@ -48,7 +48,7 @@ func main() {
 	kubeletInsecure := flag.Bool("kubelet-insecure", true,
 		"Skip TLS verification when querying the node-local kubelet (in-cluster only)")
 	configPath := flag.String("config", "",
-		"Path to a YAML config file with extra environ redaction rules (also baked into the systemd unit when used with --deploy-as-systemd-service)")
+		"Path to a YAML config file with extra environ redaction rules and per-label size limits (max_label_bytes); an unreadable file or an invalid entry aborts startup (also baked into the systemd unit when used with --deploy-as-systemd-service)")
 	flag.Parse()
 
 	if *showVersion {
@@ -106,18 +106,21 @@ func main() {
 	// Start background scraping thread
 	go startScraper(store, *scrapeInterval, inCluster)
 
-	// Load optional config for extra environ redaction rules (fail-fast).
+	// Load optional config for extra environ redaction rules and label-size
+	// overrides (fail-fast: a rejected override must not start silently).
+	var cfg *exporter.Config
 	var redactKeySubstrings []string
 	if *configPath != "" {
-		cfg, err := exporter.LoadConfig(*configPath)
+		loaded, err := exporter.LoadConfig(*configPath)
 		if err != nil {
 			log.Fatalf("config: %v", err)
 		}
+		cfg = loaded
 		redactKeySubstrings = cfg.RedactKeySubstrings
 	}
 
 	// Register Prometheus custom collector
-	collector := exporter.NewProcessCollector(store, redactKeySubstrings...)
+	collector := exporter.NewProcessCollectorWithConfig(store, cfg)
 	prometheus.MustRegister(collector)
 
 	// When running inside Kubernetes, also export per-job pod resource requests.
@@ -128,7 +131,7 @@ func main() {
 			log.Printf("kube: disabled (kubelet client init failed: %v)", err)
 		} else {
 			go startKubeScraper(kubeStore, client, *scrapeInterval)
-			prometheus.MustRegister(exporter.NewKubeCollector(store, kubeStore))
+			prometheus.MustRegister(exporter.NewKubeCollectorWithConfig(store, kubeStore, cfg, collector))
 			log.Printf("kube: enabled, polling kubelet at %s", client.BaseURL())
 		}
 	}
