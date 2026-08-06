@@ -7,3 +7,30 @@
 redact_key_substrings:
   - vault
   - internal_token
+
+# Per-label size limits, in BYTES of a single label value. Anything longer is
+# cut on a rune boundary and gets a marker carrying the original length and a
+# fingerprint: "<prefix>…[len=<N>;sha256=<12 hex>]". Every cut increments
+# gitlab_exporter_label_truncations_total{label="..."} — watch that counter to
+# tell whether a limit is too low for this host.
+#
+# Only the labels below may be overridden, and only with a value of at least 49
+# bytes (the worst-case marker size — below that a cut value would be longer
+# than the limit and almost entirely marker). An unknown label name, a
+# non-positive value, or a value under the floor aborts startup rather than
+# being ignored. Omitted entries keep their default.
+#
+# Defaults:
+#   name:            128   (on all 12 metrics)
+#   cmdline:         2048  (gitlab_process_info only; this cap is already hit)
+#   ci_job_name:     256   (on all 12 metrics)
+#   ci_project_path: 256   (on all 12 metrics)
+#   ci_job_id:       32    (on all 12 metrics; numeric)
+#   ci_pipeline_id:  32    (on all 12 metrics; numeric)
+#
+# "environ" is not overridable here: it is a composed blob with its own
+# three-way bound (100 vars / 256 bytes per value / 8192 bytes total).
+#
+# max_label_bytes:
+#   ci_job_name: 512
+#   ci_project_path: 512

@@ -45,7 +45,35 @@ const (
 	// the ceiling is stated here and asserted in the tests.
 	maxMarkerLen = len(truncEllipsis) + len("[len=") + truncMaxLenDigits +
 		len(";sha256=") + truncFingerprintLen + len("]")
+	// minLabelBytes is the floor for an operator-supplied limit. Below the
+	// marker's own worst-case size, truncation stops bounding anything: the
+	// result is longer than the limit, and what survives is mostly marker rather
+	// than data. Two of the built-in defaults (the numeric ci_job_id /
+	// ci_pipeline_id, at 32) sit below this floor on purpose — they bound values
+	// that are ~7 bytes in practice and never truncate — but an operator has no
+	// such context, so overrides are held to the floor.
+	minLabelBytes = maxMarkerLen
 )
+
+// mergedMaxLabelBytes returns the effective limit table: a copy of the
+// published MaxLabelBytes contract with the operator's overrides applied.
+//
+// It copies rather than mutating: MaxLabelBytes is package state shared by
+// every collector in the process, and an override belongs to the one collector
+// the config was loaded for. Overrides are expected to have passed
+// validateMaxLabelBytes already, so unknown names cannot enlarge the table.
+func mergedMaxLabelBytes(overrides map[string]int) map[string]int {
+	out := make(map[string]int, len(MaxLabelBytes))
+	for label, limit := range MaxLabelBytes {
+		out[label] = limit
+	}
+	for label, limit := range overrides {
+		if _, ok := out[label]; ok {
+			out[label] = limit
+		}
+	}
+	return out
+}
 
 // truncateWithFingerprint caps a valid-UTF-8 value at max bytes, cutting at a
 // rune boundary and appending a marker that carries the original byte length
@@ -92,19 +120,25 @@ type truncationObserver interface {
 	observeTruncation(label string)
 }
 
-// boundLabel applies the MaxLabelBytes contract to one label value. A label
-// with no entry in the table passes through unchanged — silently bounding it
-// would hide the fact that the table is missing an entry.
+// boundLabel applies the default MaxLabelBytes contract to one label value.
+// Use boundLabelWith when a collector carries operator overrides.
+func boundLabel(name, value string, obs ...truncationObserver) string {
+	return boundLabelWith(MaxLabelBytes, name, value, obs...)
+}
+
+// boundLabelWith applies a limit table to one label value. A label with no
+// entry in the table passes through unchanged — silently bounding it would
+// hide the fact that the table is missing an entry.
 //
 // Ordering is fixed and must not change: sanitizeLabelValue first (make the
-// value valid UTF-8), then redact, then boundLabel. Bounding invalid UTF-8
-// makes the rune walk-back meaningless.
+// value valid UTF-8), then redact, then bound. Bounding invalid UTF-8 makes the
+// rune walk-back meaningless.
 //
 // Callers that can observe truncation should pass one: cutting a label value
 // is a silent, lossy event, and cmdline proves it happens in production
 // unannounced.
-func boundLabel(name, value string, obs ...truncationObserver) string {
-	max, ok := MaxLabelBytes[name]
+func boundLabelWith(limits map[string]int, name, value string, obs ...truncationObserver) string {
+	max, ok := limits[name]
 	if !ok {
 		return value
 	}

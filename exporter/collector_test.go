@@ -797,6 +797,127 @@ func TestLabelTruncationsAccumulateAcrossScrapes(t *testing.T) {
 	}
 }
 
+// An operator override is only real once the collector emits it: a validated
+// Config that never reaches the label path is a limit that quietly never
+// applies. Both directions are pinned — a lower limit must cut sooner, a higher
+// one must let more through — because a collector that ignored the config
+// entirely would still pass a one-sided test.
+func TestNewProcessCollectorWithConfigAppliesLabelLimits(t *testing.T) {
+	const (
+		lowered = 64   // < the 256-byte ci_job_name default
+		raised  = 1024 // > the 128-byte name default
+	)
+	jobName := strings.Repeat("j", 4096)
+	procName := strings.Repeat("n", 4096)
+
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        9186,
+		Name:       procName,
+		CmdLine:    "runner exec",
+		Environ:    map[string]string{"CI_JOB_NAME": jobName},
+		CreateTime: 400,
+		IsActive:   true,
+	})
+
+	cfg := &Config{MaxLabelBytes: map[string]int{
+		"ci_job_name": lowered,
+		"name":        raised,
+	}}
+
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(NewProcessCollectorWithConfig(store, cfg))
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+
+	seen := map[string]int{}
+	for _, mf := range mfs {
+		if !strings.HasPrefix(mf.GetName(), "gitlab_process_") {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				want, ok := map[string]int{"ci_job_name": lowered, "name": raised}[lp.GetName()]
+				if !ok {
+					continue
+				}
+				seen[lp.GetName()]++
+				val := lp.GetValue()
+				if len(val) > want+maxMarkerLen {
+					t.Errorf("%s: label %q is %d bytes, override ceiling is %d",
+						mf.GetName(), lp.GetName(), len(val), want+maxMarkerLen)
+				}
+				if len(val) <= want {
+					t.Errorf("%s: label %q is %d bytes — a 4KB input must still be cut at %d",
+						mf.GetName(), lp.GetName(), len(val), want)
+				}
+				if !utf8.ValidString(val) {
+					t.Errorf("label %q is not valid UTF-8 after bounding: %q", lp.GetName(), val)
+				}
+			}
+		}
+	}
+	if seen["name"] != 12 || seen["ci_job_name"] != 12 {
+		t.Fatalf("overridden labels were checked on name=%d ci_job_name=%d metrics, expected 12 each",
+			seen["name"], seen["ci_job_name"])
+	}
+
+	// The default table must be untouched for the rest of the process: another
+	// collector built without a config still sees the published contract.
+	if MaxLabelBytes["name"] != 128 || MaxLabelBytes["ci_job_name"] != 256 {
+		t.Errorf("the override leaked into the package defaults: %v", MaxLabelBytes)
+	}
+}
+
+// A nil Config is the no-config-file path in main and must mean "defaults",
+// not "no limits at all".
+func TestNewProcessCollectorWithConfigNilUsesDefaults(t *testing.T) {
+	name := strings.Repeat("n", 4096)
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        9187,
+		Name:       name,
+		CreateTime: 400,
+		IsActive:   true,
+	})
+
+	pc := NewProcessCollectorWithConfig(store, nil)
+	metricChan := make(chan prometheus.Metric, 24)
+	pc.Collect(metricChan)
+	close(metricChan)
+
+	seen := false
+	for m := range metricChan {
+		val, ok := readMetricLabels(t, m)["name"]
+		if !ok {
+			continue
+		}
+		seen = true
+		if want := boundLabel("name", name); val != want {
+			t.Errorf("emitted name %q, want the default-contract value %q", val, want)
+		}
+	}
+	if !seen {
+		t.Fatal("no metric carried a name label")
+	}
+}
+
+// The redaction substrings must survive the same constructor — folding two
+// knobs into one entry point is how one of them gets dropped.
+func TestNewProcessCollectorWithConfigKeepsRedactSubstrings(t *testing.T) {
+	pc := NewProcessCollectorWithConfig(NewHistoryStore(), &Config{
+		RedactKeySubstrings: []string{"vault"},
+	})
+	got, _ := pc.scrubEnviron(map[string]string{"MY_VAULT_THING": "plaintext"})
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("operator substring was not applied: %q", got)
+	}
+}
+
 // A reaper — pid 1, a job shell — carries its dead children's I/O in the
 // process-wide counter while having issued none of it. The two families of
 // series must stay distinct, or topk() over write bytes ranks reapers.

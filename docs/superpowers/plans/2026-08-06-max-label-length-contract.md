@@ -228,16 +228,35 @@ reports it. An explicit contract needs an explicit signal.
 
 **Files:** Modify `exporter/config.go`, `exporter/config_test.go`, `config.example.yaml`
 
-- [ ] **Step 1: Write the failing tests** — YAML `max_label_bytes: {ci_job_name: 512}` overrides
+- [x] **Step 1: Write the failing tests** — YAML `max_label_bytes: {ci_job_name: 512}` overrides
   one entry and leaves the rest at defaults; an unknown label name is a **fail-fast
   error** (silently ignoring a typo'd override is how a limit quietly never applies);
   a value `<= 0` is rejected; a value below the marker length is rejected.
-- [ ] **Step 2: Run tests — MUST FAIL**
-- [ ] **Step 3:** Add `MaxLabelBytes map[string]int` to `Config` with validation; apply it in
+  `TestLoadConfigMaxLabelBytesRejected` also pins that the error message names the offending
+  entry, that `environ` is rejected like any other unknown name (it is bounded elsewhere, not
+  here), and that a non-integer value fails the parse. `TestLoadConfigMaxLabelBytesAcceptsTheFloor`
+  pins the boundary from the other side. In `collector_test.go`,
+  `TestNewProcessCollectorWithConfigAppliesLabelLimits` gathers off a registry and asserts a
+  *lowered* and a *raised* limit both take effect on all 12 metrics — a one-sided test would pass
+  against a collector that ignored the config outright.
+- [x] **Step 2: Run tests — MUST FAIL** (build failure: `unknown field MaxLabelBytes`,
+  `undefined: NewProcessCollectorWithConfig`, `undefined: mergedMaxLabelBytes`)
+- [x] **Step 3:** Add `MaxLabelBytes map[string]int` to `Config` with validation; apply it in
   `NewProcessCollector`. Keep the existing variadic-param compatibility approach so
-  current call sites compile unchanged.
-- [ ] **Step 4: Run tests — MUST PASS**
-- [ ] **Step 5:** `make fmt && make lint`
+  current call sites compile unchanged. Done via a sibling constructor
+  `NewProcessCollectorWithConfig(store, *Config)` — Go has no second variadic, and this leaves
+  every existing `NewProcessCollector(store, subs...)` call site untouched. The collector gained
+  a per-instance `maxLabelBytes` table (`mergedMaxLabelBytes` copies the package contract rather
+  than mutating shared state), and `boundLabel`/`ciJobLabelValues` grew `…With(limits, …)`
+  variants so the pure default-table functions still exist for tests.
+  **Floor asymmetry, deliberate:** overrides must be `>= minLabelBytes` (= `maxMarkerLen`, 49),
+  while the built-in `ci_job_id`/`ci_pipeline_id` defaults are 32. Those bound ~7-byte numeric
+  values and never truncate; an operator has no such context, so overrides are held to the floor.
+  Documented in the `minLabelBytes` comment.
+- [x] **Step 4: Run tests — MUST PASS** (`go test -race -cover ./...` → `exporter/` 92.1% of statements)
+- [x] **Step 5:** `make fmt && make lint` (`gofmt -s` clean + `go vet ./...` clean; `goimports` and
+  `golangci-lint` binaries are not installed in this environment, so `make fmt`/`make lint` abort
+  on the missing tool)
 
 ---
 

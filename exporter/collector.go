@@ -31,6 +31,12 @@ func ciJobLabelNames() []string {
 }
 
 // ciJobLabelValues extracts the promoted CI label values from a process
+// environ map, bounded by the default contract. See ciJobLabelValuesWith.
+func ciJobLabelValues(environ map[string]string, obs ...truncationObserver) []string {
+	return ciJobLabelValuesWith(MaxLabelBytes, environ, obs...)
+}
+
+// ciJobLabelValuesWith extracts the promoted CI label values from a process
 // environ map. A missing variable yields "" — Prometheus treats an empty
 // label value as absent, so non-CI processes simply carry no job identity.
 //
@@ -41,10 +47,10 @@ func ciJobLabelNames() []string {
 //
 // obs is optional so callers without a collector (tests, future call sites)
 // still get the contract; a collector passes itself to count the cuts.
-func ciJobLabelValues(environ map[string]string, obs ...truncationObserver) []string {
+func ciJobLabelValuesWith(limits map[string]int, environ map[string]string, obs ...truncationObserver) []string {
 	vals := make([]string, len(ciJobLabelKeys))
 	for i, k := range ciJobLabelKeys {
-		vals[i] = boundLabel(k.label, sanitizeLabelValue(environ[k.env]), obs...)
+		vals[i] = boundLabelWith(limits, k.label, sanitizeLabelValue(environ[k.env]), obs...)
 	}
 	return vals
 }
@@ -56,6 +62,12 @@ type ProcessCollector struct {
 	// extraKeySubstrings are operator-configured key-name substrings that
 	// augment the built-in IsSecretKey denylist (normalized: lowercase, trimmed).
 	extraKeySubstrings []string
+
+	// maxLabelBytes is this collector's effective limit table: the published
+	// MaxLabelBytes contract merged with any operator overrides. It is always
+	// non-nil and is never the package map itself, so one configured collector
+	// cannot change the limits another one applies.
+	maxLabelBytes map[string]int
 
 	// Metric Descriptors
 	cpuDesc                 *prometheus.Desc
@@ -85,7 +97,28 @@ const syscallHelp = " These are read(2)/write(2) call counts, NOT block-device I
 	"merges and splits them on the way to the disk, and the kernel does not attribute block operations " +
 	"back to the process that dirtied the page. Use node_disk_*_completed_total for true device IOPS."
 
-// NewProcessCollector creates and initializes a ProcessCollector.
+// NewProcessCollectorWithConfig creates a ProcessCollector from a loaded
+// Config, applying both operator knobs: the extra redaction substrings and the
+// MaxLabelBytes overrides. A nil cfg means "no config file" and yields the
+// defaults — not "no limits".
+//
+// It is a separate entry point rather than another parameter on
+// NewProcessCollector so the existing variadic call sites keep compiling
+// unchanged. cfg.MaxLabelBytes is expected to have come through LoadConfig,
+// which validates it; entries for unknown labels are ignored here rather than
+// silently widening the table.
+func NewProcessCollectorWithConfig(store *HistoryStore, cfg *Config) *ProcessCollector {
+	if cfg == nil {
+		return NewProcessCollector(store)
+	}
+	pc := NewProcessCollector(store, cfg.RedactKeySubstrings...)
+	pc.maxLabelBytes = mergedMaxLabelBytes(cfg.MaxLabelBytes)
+	return pc
+}
+
+// NewProcessCollector creates and initializes a ProcessCollector with the
+// default label-size contract. See NewProcessCollectorWithConfig to apply
+// operator overrides.
 func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *ProcessCollector {
 	commonLabels := append([]string{"pid", "name"}, ciJobLabelNames()...)
 
@@ -106,6 +139,7 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 	return &ProcessCollector{
 		store:              store,
 		extraKeySubstrings: normalizeSubstrings(extraKeySubstrings),
+		maxLabelBytes:      mergedMaxLabelBytes(nil),
 		truncations:        truncations,
 		cpuDesc: prometheus.NewDesc(
 			"gitlab_process_cpu_seconds_total",
@@ -176,6 +210,21 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 			append([]string{"pid", "name", "cmdline", "environ", "environ_truncated"}, ciJobLabelNames()...), nil,
 		),
 	}
+}
+
+// limits returns the collector's effective label-size table, falling back to
+// the published contract for a zero-value collector built without the
+// constructor.
+func (pc *ProcessCollector) limits() map[string]int {
+	if pc.maxLabelBytes == nil {
+		return MaxLabelBytes
+	}
+	return pc.maxLabelBytes
+}
+
+// boundLabel applies this collector's limit table and counts what it cuts.
+func (pc *ProcessCollector) boundLabel(name, value string) string {
+	return boundLabelWith(pc.limits(), name, value, pc)
 }
 
 // observeTruncation implements truncationObserver: boundLabel calls it once per
@@ -337,8 +386,8 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 
 	for _, p := range processes {
 		pidStr := fmt.Sprintf("%d", p.PID)
-		name := boundLabel("name", sanitizeLabelValue(p.Name), pc)
-		ciVals := ciJobLabelValues(p.Environ, pc)
+		name := pc.boundLabel("name", sanitizeLabelValue(p.Name))
+		ciVals := ciJobLabelValuesWith(pc.limits(), p.Environ, pc)
 		labels := append([]string{pidStr, name}, ciVals...)
 
 		// Emit core stats
@@ -360,7 +409,7 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		if environTruncated {
 			truncatedLabel = "1"
 		}
-		cmdline := boundLabel("cmdline", sanitizeLabelValue(p.CmdLine), pc)
+		cmdline := pc.boundLabel("cmdline", sanitizeLabelValue(p.CmdLine))
 		infoLabels := append([]string{pidStr, name, cmdline, environ, truncatedLabel}, ciVals...)
 		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
 	}

@@ -106,18 +106,21 @@ func main() {
 	// Start background scraping thread
 	go startScraper(store, *scrapeInterval, inCluster)
 
-	// Load optional config for extra environ redaction rules (fail-fast).
+	// Load optional config for extra environ redaction rules and label-size
+	// overrides (fail-fast: a rejected override must not start silently).
+	var cfg *exporter.Config
 	var redactKeySubstrings []string
 	if *configPath != "" {
-		cfg, err := exporter.LoadConfig(*configPath)
+		loaded, err := exporter.LoadConfig(*configPath)
 		if err != nil {
 			log.Fatalf("config: %v", err)
 		}
+		cfg = loaded
 		redactKeySubstrings = cfg.RedactKeySubstrings
 	}
 
 	// Register Prometheus custom collector
-	collector := exporter.NewProcessCollector(store, redactKeySubstrings...)
+	collector := exporter.NewProcessCollectorWithConfig(store, cfg)
 	prometheus.MustRegister(collector)
 
 	// When running inside Kubernetes, also export per-job pod resource requests.
