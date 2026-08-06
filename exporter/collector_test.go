@@ -254,14 +254,26 @@ func TestScrubEnvironDeterministicOrder(t *testing.T) {
 func TestScrubEnvironBounds(t *testing.T) {
 	pc := NewProcessCollector(NewHistoryStore())
 
-	// Over-long value is replaced whole, not byte-cut, and flagged truncated.
+	// Over-long value keeps a prefix plus the informative marker carrying the
+	// ORIGINAL length and a fingerprint — the same contract boundLabel applies.
 	longVal := strings.Repeat("x", maxEnvironValueLen+1)
 	out, trunc := pc.scrubEnviron(map[string]string{"BIG": longVal})
-	if strings.Contains(out, "x") || !strings.Contains(out, "BIG="+environValueTruncMarker) {
-		t.Errorf("expected over-long value replaced with %q, got %q", environValueTruncMarker, out)
+	if want := "BIG=" + truncateWithFingerprint(longVal, maxEnvironValueLen); out != want {
+		t.Errorf("expected over-long value truncated to %q, got %q", want, out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("[len=%d;sha256=", len(longVal))) {
+		t.Errorf("marker must report the original length %d, got %q", len(longVal), out)
 	}
 	if trunc {
 		t.Error("single over-long value should not set the truncated flag (nothing dropped)")
+	}
+
+	// [REDACTED] must keep winning over truncation: an over-long value under a
+	// sensitive key leaks a prefix and a fingerprint of the secret if the switch
+	// arms are ever reordered.
+	out, _ = pc.scrubEnviron(map[string]string{"API_KEY": longVal})
+	if out != "API_KEY=[REDACTED]" {
+		t.Errorf("redaction must win over truncation for sensitive pairs, got %q", out)
 	}
 
 	// Redaction keeps the variable present, so it must NOT set the flag either.
@@ -299,6 +311,27 @@ func TestScrubEnvironBounds(t *testing.T) {
 	if !trunc {
 		t.Error("expected truncated flag when byte ceiling is hit")
 	}
+
+	// Same ceiling, but with the marker in play: the fingerprint marker is ~35
+	// bytes against 11 for the old "[TRUNCATED]", so every truncated pair is
+	// bigger and the ceiling is reached sooner. It must still hold exactly.
+	marked := make(map[string]string, maxEnvironVars)
+	for i := 0; i < maxEnvironVars; i++ {
+		marked[fmt.Sprintf("K%04d", i)] = strings.Repeat("z", maxEnvironValueLen+1)
+	}
+	out, trunc = pc.scrubEnviron(marked)
+	if len(out) > maxEnvironBytes {
+		t.Errorf("environ label %d bytes exceeds ceiling %d with the marker in play", len(out), maxEnvironBytes)
+	}
+	if !trunc {
+		t.Error("expected truncated flag when the byte ceiling is hit with markers")
+	}
+	if !strings.Contains(out, ";sha256=") {
+		t.Errorf("expected fingerprint markers in the joined label, got %q", out)
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("environ label is not valid UTF-8: %q", out)
+	}
 }
 
 // TestScrubEnvironAtLimits pins the exact boundary conditions so an off-by-one
@@ -315,6 +348,22 @@ func TestScrubEnvironAtLimits(t *testing.T) {
 	}
 	if trunc {
 		t.Error("value at the length limit must not set the truncated flag")
+	}
+
+	// One byte over the length limit: the marker fires, and the whole pair stays
+	// within maxEnvironValueLen+maxMarkerLen — a marker appended past the limit
+	// is how a "bounded" value stops being bounded.
+	overVal := strings.Repeat("x", maxEnvironValueLen+1)
+	out, trunc = pc.scrubEnviron(map[string]string{"OK": overVal})
+	val := strings.TrimPrefix(out, "OK=")
+	if !strings.HasSuffix(val, "]") || !strings.Contains(val, ";sha256=") {
+		t.Errorf("value of maxEnvironValueLen+1 bytes must carry the marker, got %q", out)
+	}
+	if len(val) > maxEnvironValueLen+maxMarkerLen {
+		t.Errorf("truncated value %d bytes exceeds ceiling %d", len(val), maxEnvironValueLen+maxMarkerLen)
+	}
+	if trunc {
+		t.Error("per-value truncation must not set the truncated flag (variable list is complete)")
 	}
 
 	// Exactly maxEnvironVars variables: all present, flag NOT set. Guard is
@@ -355,19 +404,31 @@ func TestScrubEnvironEmpty(t *testing.T) {
 	}
 }
 
-// TestScrubEnvironUTF8Safe verifies the "replaced whole, never byte-cut" claim:
-// an over-long multi-byte value is swapped for the marker and the label stays
-// valid UTF-8.
+// TestScrubEnvironUTF8Safe verifies the cut never lands mid-rune: the value is
+// now byte-cut (not replaced whole), so the rune walk-back is what keeps the
+// label valid UTF-8 — and MustNewConstMetric panics on invalid UTF-8.
 func TestScrubEnvironUTF8Safe(t *testing.T) {
 	pc := NewProcessCollector(NewHistoryStore())
-	// "世" is 3 bytes; repeat past the byte limit.
+	// "世" is 3 bytes and maxEnvironValueLen is not a multiple of 3, so the raw
+	// cut lands mid-rune and the walk-back must fire.
 	multiByte := strings.Repeat("世", maxEnvironValueLen)
 	out, _ := pc.scrubEnviron(map[string]string{"WIDE": multiByte})
-	if out != "WIDE="+environValueTruncMarker {
-		t.Errorf("expected over-long multi-byte value replaced whole, got %q", out)
+	if want := "WIDE=" + truncateWithFingerprint(multiByte, maxEnvironValueLen); out != want {
+		t.Errorf("expected over-long multi-byte value truncated to %q, got %q", want, out)
 	}
 	if !utf8.ValidString(out) {
 		t.Errorf("environ label is not valid UTF-8: %q", out)
+	}
+	// The marker reports the original byte length, not the surviving prefix.
+	if !strings.Contains(out, fmt.Sprintf("[len=%d;sha256=", len(multiByte))) {
+		t.Errorf("marker must report the original length %d, got %q", len(multiByte), out)
+	}
+	prefix, _, found := strings.Cut(strings.TrimPrefix(out, "WIDE="), truncEllipsis)
+	if !found {
+		t.Fatalf("expected the truncation marker in %q", out)
+	}
+	if len(prefix)%3 != 0 {
+		t.Errorf("prefix %d bytes is not a whole number of 3-byte runes", len(prefix))
 	}
 }
 

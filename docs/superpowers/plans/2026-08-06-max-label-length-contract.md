@@ -169,16 +169,23 @@ currently unbounded.
 
 **Files:** Modify `exporter/collector.go`, `exporter/collector_test.go`
 
-- [ ] **Step 1:** Update `TestScrubEnvironBounds` / `TestScrubEnvironAtLimits` / `TestScrubEnvironUTF8Safe`:
+- [x] **Step 1:** Update `TestScrubEnvironBounds` / `TestScrubEnvironAtLimits` / `TestScrubEnvironUTF8Safe`:
   an over-long value is replaced by the fingerprint marker, **`[REDACTED]` still wins over
   truncation for sensitive pairs** (order of the `switch` must not change), and the
   `maxEnvironBytes` ceiling still holds *with the longer marker in play*.
-- [ ] **Step 2: Run tests — MUST FAIL**
-- [ ] **Step 3:** In `scrubEnviron`, replace `val = environValueTruncMarker` with
+  `TestScrubEnvironUTF8Safe` now pins the rune walk-back directly: the value is byte-cut
+  rather than replaced whole, so the surviving prefix must be a whole number of 3-byte runes.
+  `TestScrubEnvironAtLimits` gained a limit+1 case asserting the pair stays within
+  `maxEnvironValueLen + maxMarkerLen`.
+- [x] **Step 2: Run tests — MUST FAIL** (marker format changed — `scrubEnviron` emitted
+  `BIG=[TRUNCATED]` against the expected `BIG=xxx…[len=257;sha256=15eb95a462ee]`)
+- [x] **Step 3:** In `scrubEnviron`, replace `val = environValueTruncMarker` with
   `val = truncateWithFingerprint(val, maxEnvironValueLen)`. Verify `environ_truncated`
-  semantics are untouched.
-- [ ] **Step 4: Run tests — MUST PASS**
-- [ ] **Step 5:** `make fmt && make lint`
+  semantics are untouched. The length arm became the `switch`'s `default` (the guard now
+  lives inside `truncateWithFingerprint`) and the now-unused `environValueTruncMarker`
+  const was deleted.
+- [x] **Step 4: Run tests — MUST PASS** (`go test -race -cover ./...` → `exporter/` 91.6% of statements)
+- [x] **Step 5:** `make fmt && make lint` (gofmt clean + `go vet` clean; `goimports` and `golangci-lint` binaries are not installed in this environment, so `make fmt`/`make lint` abort on the missing tool)
 
 > **Watch the ceiling interaction:** the fingerprint marker is ~35 B versus 11 B for
 > `[TRUNCATED]`. With many truncated values the joined label reaches `maxEnvironBytes`
@@ -228,6 +235,8 @@ reports it. An explicit contract needs an explicit signal.
 **Files:** Modify `README.md`, `CLAUDE.md`, `config.example.yaml`
 
 - [ ] Document each label, its limit, and the marker format as part of the **input-data contract**.
+- [ ] Carry over Task 4's changelog callout — there is no `CHANGELOG` file in this repo, so the
+      `environ_truncated`-flips-sooner behaviour change belongs in the `README.md` notes here.
 - [ ] Add to `CLAUDE.md`, next to the existing `sanitizeLabelValue` rule: *every label value
       MUST pass `sanitizeLabelValue()` then `boundLabel()` before reaching
       `MustNewConstMetric`.* The existing rule covers UTF-8 validity but not length.

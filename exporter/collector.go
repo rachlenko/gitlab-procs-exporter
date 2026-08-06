@@ -197,8 +197,10 @@ const (
 	// maxEnvironVars caps how many variables (sorted by key) are emitted.
 	maxEnvironVars = 100
 	// maxEnvironValueLen caps a single value's length in bytes; longer values
-	// are replaced with environValueTruncMarker whole (never byte-cut, so the
-	// label stays valid UTF-8).
+	// are cut by truncateWithFingerprint, which cuts on a rune boundary (so the
+	// label stays valid UTF-8) and appends the original length and a
+	// fingerprint. A truncated value is therefore at most
+	// maxEnvironValueLen+maxMarkerLen bytes, not maxEnvironValueLen.
 	maxEnvironValueLen = 256
 	// maxEnvironBytes is a hard ceiling on the joined label. It's a conservative,
 	// self-imposed cap that keeps label values small and predictable; 100 vars *
@@ -208,10 +210,6 @@ const (
 	// an operator who sets label_value_length_limit below 8192 must lower this too.
 	maxEnvironBytes = 8192
 )
-
-// environValueTruncMarker replaces a value longer than maxEnvironValueLen. It's
-// distinct from "[REDACTED]" so "too long" is distinguishable from "secret".
-const environValueTruncMarker = "[TRUNCATED]"
 
 // sanitizeLabelValue replaces invalid UTF-8 bytes with the Unicode
 // replacement character. MustNewConstMetric panics on invalid UTF-8, and a
@@ -233,7 +231,7 @@ func sanitizeLabelValue(v string) string {
 // means exactly one thing: the variable LIST is incomplete — one or more
 // variables were entirely omitted, either because there were more than
 // maxEnvironVars of them or because the maxEnvironBytes ceiling was reached.
-// It is deliberately NOT set by [REDACTED] or by per-value [TRUNCATED]: those
+// It is deliberately NOT set by [REDACTED] or by per-value truncation: those
 // keep the variable present (only its value changes), so the list is complete.
 func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, bool) {
 	// Sort keys so the gitlab_process_info "environ" label is stable across
@@ -254,10 +252,12 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 	for _, k := range keys {
 		val := sanitizeLabelValue(environ[k])
 		switch {
+		// Arm order is load-bearing: redaction must win, or an over-long secret
+		// would leak a prefix and a fingerprint of itself.
 		case isSensitivePair(k, val, pc.extraKeySubstrings):
 			val = "[REDACTED]"
-		case len(val) > maxEnvironValueLen:
-			val = environValueTruncMarker
+		default:
+			val = truncateWithFingerprint(val, maxEnvironValueLen)
 		}
 		pair := fmt.Sprintf("%s=%s", sanitizeLabelValue(k), val)
 
