@@ -31,6 +31,14 @@ redact_key_substrings:
 # "environ" is not overridable here: it is a composed blob with its own
 # three-way bound (100 vars / 256 bytes per value / 8192 bytes total).
 #
+# An override must be 49-8143 bytes. Below the floor a truncated value is mostly
+# marker; above the ceiling a truncated value (limit + its 49-byte marker) can
+# exceed the 8192-byte label_value_length_limit this exporter is deployed with,
+# and Prometheus then rejects the WHOLE scrape rather than the one value.
+#
+# Unknown top-level keys are rejected too: a misspelled "redact_key_substrings"
+# would otherwise parse fine and leave you with no redaction filters at all.
+#
 # The full contract — every label, its limit, the marker format and the
 # recommended Prometheus-side limits — is in README.md, "Label size contract".
 #

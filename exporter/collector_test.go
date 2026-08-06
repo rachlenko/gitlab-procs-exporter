@@ -407,6 +407,29 @@ func TestScrubEnvironBounds(t *testing.T) {
 	if !utf8.ValidString(out) {
 		t.Errorf("environ label is not valid UTF-8: %q", out)
 	}
+
+	// One pair too big for the ceiling on its own must not take the rest with it.
+	// Only the VALUE is capped by maxEnvironValueLen; the key never is, and the
+	// kernel allows env strings up to 128KB. Keys are sorted, so a monster key
+	// that sorts first used to end the loop on iteration one and emit an EMPTY
+	// environ — every other variable on the process gone.
+	hostile := map[string]string{
+		strings.Repeat("A", maxEnvironBytes+1): "x",
+		"ZZZ_KEEP_ME":                          "keepme",
+	}
+	out, trunc = pc.scrubEnviron(hostile)
+	if !trunc {
+		t.Error("a pair skipped for the ceiling leaves the list incomplete; flag must be set")
+	}
+	if !strings.Contains(out, "ZZZ_KEEP_ME=keepme") {
+		t.Errorf("one oversized pair swallowed the variables that still fit: %q", out)
+	}
+	if len(out) > maxEnvironBytes {
+		t.Errorf("environ label %d bytes exceeds ceiling %d", len(out), maxEnvironBytes)
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("environ label is not valid UTF-8: %q", out)
+	}
 }
 
 // TestScrubEnvironAtLimits pins the exact boundary conditions so an off-by-one

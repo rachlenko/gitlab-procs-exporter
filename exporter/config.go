@@ -15,8 +15,9 @@ type Config struct {
 
 	// MaxLabelBytes overrides individual entries of the published
 	// MaxLabelBytes contract. Only labels already in that table may be
-	// overridden, and only with a limit of at least minLabelBytes; anything
-	// else fails the load. Absent entries keep their default.
+	// overridden, and only with a limit between minLabelBytes and
+	// maxLabelBytesCeiling; anything else fails the load. Absent entries keep
+	// their default.
 	MaxLabelBytes map[string]int `yaml:"max_label_bytes"`
 }
 
@@ -29,7 +30,14 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %q: %w", path, err)
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// Strict: a misspelled TOP-LEVEL key is the one config typo that fails
+	// silently and dangerously. `redact_key_substring` (singular) parses fine
+	// under non-strict unmarshal, yields an empty list, and the exporter comes up
+	// healthy while publishing every value the operator asked to have scrubbed.
+	// A typo INSIDE max_label_bytes already aborts the load; this makes the key
+	// itself just as loud, and matches the same rule the whole contract rests on:
+	// a silently ignored setting is indistinguishable from one being applied.
+	if err := yaml.UnmarshalStrict(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", path, err)
 	}
 	cfg.RedactKeySubstrings = normalizeSubstrings(cfg.RedactKeySubstrings)
@@ -57,6 +65,13 @@ func validateMaxLabelBytes(overrides map[string]int) error {
 			return fmt.Errorf(
 				"max_label_bytes[%q]: %d is below the %d-byte truncation marker, so a cut value "+
 					"would be longer than the limit and almost entirely marker", name, limit, minLabelBytes)
+		case limit > maxLabelBytesCeiling:
+			return fmt.Errorf(
+				"max_label_bytes[%q]: %d is above the %d-byte ceiling; a cut value carries a "+
+					"%d-byte marker past the limit, so anything higher can emit a label value over "+
+					"the %d-byte label_value_length_limit this exporter is deployed with, and "+
+					"Prometheus rejects the WHOLE scrape rather than the one value",
+				name, limit, maxLabelBytesCeiling, maxMarkerLen, maxEnvironBytes)
 		}
 	}
 	return nil

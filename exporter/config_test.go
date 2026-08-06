@@ -177,9 +177,34 @@ func TestLoadConfigMaxLabelBytesRejected(t *testing.T) {
 			wantSubs: "name",
 		},
 		{
+			name:     "above the scrape-limit ceiling",
+			yaml:     fmt.Sprintf("max_label_bytes:\n  cmdline: %d\n", maxLabelBytesCeiling+1),
+			wantSubs: "cmdline",
+		},
+		{
+			// The case an operator actually reaches for: "truncation is losing my
+			// cmdlines, raise the limit". Accepting it trades truncated values for
+			// a rejected scrape — every metric from the host, not just this label.
+			name:     "raised far past the ceiling",
+			yaml:     "max_label_bytes:\n  cmdline: 65536\n",
+			wantSubs: "rejects the WHOLE scrape",
+		},
+		{
 			name:     "not a number",
 			yaml:     "max_label_bytes:\n  name: wide\n",
 			wantSubs: "parse config",
+		},
+		{
+			// The dangerous typo: singular, parses fine under non-strict
+			// unmarshal, and yields NO redaction filters on a healthy-looking pod.
+			name:     "misspelled top-level redact key",
+			yaml:     "redact_key_substring:\n  - vault\n",
+			wantSubs: "redact_key_substring",
+		},
+		{
+			name:     "misspelled top-level max_label_bytes key",
+			yaml:     "max_label_byte:\n  name: 512\n",
+			wantSubs: "max_label_byte",
 		},
 	}
 	for _, tt := range tests {
@@ -206,6 +231,27 @@ func TestLoadConfigMaxLabelBytesAcceptsTheFloor(t *testing.T) {
 	}
 	if got := mergedMaxLabelBytes(cfg.MaxLabelBytes)["name"]; got != minLabelBytes {
 		t.Errorf("name: got %d, want %d", got, minLabelBytes)
+	}
+}
+
+// The ceiling is exactly maxLabelBytesCeiling: one byte above is rejected in the
+// table above, and the value itself must be accepted, or the boundary is off by
+// one. The ceiling also has to leave real room for the marker, so a value cut at
+// it still fits the downstream label_value_length_limit.
+func TestLoadConfigMaxLabelBytesAcceptsTheCeiling(t *testing.T) {
+	cfg, err := LoadConfig(writeConfig(t,
+		fmt.Sprintf("max_label_bytes:\n  cmdline: %d\n", maxLabelBytesCeiling)))
+	if err != nil {
+		t.Fatalf("unexpected error at the ceiling: %v", err)
+	}
+	limits := mergedMaxLabelBytes(cfg.MaxLabelBytes)
+	if got := limits["cmdline"]; got != maxLabelBytesCeiling {
+		t.Fatalf("cmdline: got %d, want %d", got, maxLabelBytesCeiling)
+	}
+	got := boundLabelWith(limits, "cmdline", strings.Repeat("x", maxLabelBytesCeiling*2), nil)
+	if len(got) > maxEnvironBytes {
+		t.Errorf("a value cut at the ceiling is %d bytes, over the %d-byte scrape limit "+
+			"the ceiling exists to stay under", len(got), maxEnvironBytes)
 	}
 }
 

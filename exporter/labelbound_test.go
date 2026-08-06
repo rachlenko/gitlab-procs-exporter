@@ -178,17 +178,39 @@ func TestBoundLabelNeverExceedsCeiling(t *testing.T) {
 }
 
 func TestBoundLabelContractCoversEveryBoundedLabel(t *testing.T) {
-	// The contract is published; a missing entry means a label silently loses
-	// its bound. Every ci_* label promoted out of environ must be in the table.
-	want := []string{"name", "cmdline", "ci_job_id", "ci_job_name", "ci_project_path", "ci_pipeline_id"}
-	for _, label := range want {
+	// Derived from the collector's OWN label set, not a hand-copied list: the
+	// failure this guards is "someone adds a label and forgets the table entry",
+	// and a hardcoded want[] only catches that if they also remember to edit the
+	// test — the same act of remembering. Adding a label to infoLabelNames now
+	// fails here until it is either bounded or exempted below, on purpose.
+	exempt := map[string]string{
+		"pid":               "exporter-generated decimal PID, structurally bounded",
+		"environ":           "composed blob with its own maxEnvironVars/ValueLen/Bytes bound",
+		"environ_truncated": `exporter-generated, always "0" or "1"`,
+	}
+	for _, label := range infoLabelNames() {
 		max, ok := MaxLabelBytes[label]
 		if !ok {
-			t.Errorf("label %q is missing from the MaxLabelBytes contract", label)
+			if _, ok := exempt[label]; ok {
+				continue
+			}
+			t.Errorf("label %q is emitted but missing from the MaxLabelBytes contract, so it "+
+				"passes through unbounded; add a limit or an explicit exemption", label)
 			continue
 		}
 		if max <= 0 {
 			t.Errorf("limit for %q is %d; a non-positive limit disables the bound", label, max)
+		}
+	}
+	// An exemption that no longer names a real label is stale and would hide a
+	// genuinely unbounded label if that name were reused.
+	emitted := make(map[string]bool, len(infoLabelNames()))
+	for _, label := range infoLabelNames() {
+		emitted[label] = true
+	}
+	for label := range exempt {
+		if !emitted[label] {
+			t.Errorf("exemption for %q is stale: no such label is emitted", label)
 		}
 	}
 }

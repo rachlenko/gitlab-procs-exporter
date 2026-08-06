@@ -65,6 +65,18 @@ const (
 	// that are ~7 bytes in practice and never truncate — but an operator has no
 	// such context, so overrides are held to the floor.
 	minLabelBytes = maxMarkerLen
+	// maxLabelBytesCeiling is the ceiling for an operator-supplied limit, and it
+	// guards the failure mode that is strictly worse than truncation. A bounded
+	// value reaches limit+maxMarkerLen, and this exporter is deployed behind a
+	// downstream label_value_length_limit of maxEnvironBytes — the environ
+	// ceiling that README and deploy/k8s/servicemonitor.yaml both fix as the
+	// global one. Above this ceiling a single long cmdline produces a label value
+	// Prometheus rejects, and it rejects the WHOLE scrape rather than the one
+	// value: every metric from the host disappears. An operator raising a limit
+	// is trying to lose less data, so silently trading truncated cmdlines for
+	// total data loss is the opposite of what they asked for, and it fails the
+	// load instead.
+	maxLabelBytesCeiling = maxEnvironBytes - maxMarkerLen
 )
 
 // mergedMaxLabelBytes returns the effective limit table: a copy of the
@@ -79,15 +91,21 @@ const (
 // accepts any *Config, and the failure mode of a non-positive limit is
 // fail-OPEN: truncateWithFingerprint reads max <= 0 as "no limit configured"
 // and passes the value through, silently disabling the very bound the operator
-// was configuring. An unknown name is dropped for the same reason it cannot be
-// applied — it would widen the table past the published contract.
+// was configuring. An over-ceiling limit is dropped because its failure mode is
+// worse still — see maxLabelBytesCeiling, it costs the whole scrape. An unknown
+// name is dropped for the same reason it cannot be applied: it would widen the
+// table past the published contract.
+//
+// Dropping is the fail-safe here, not the intended path: LoadConfig rejects all
+// three cases outright, so a config that reached this function with one is a
+// hand-built *Config, not an operator's file.
 func mergedMaxLabelBytes(overrides map[string]int) map[string]int {
 	out := make(map[string]int, len(MaxLabelBytes))
 	for label, limit := range MaxLabelBytes {
 		out[label] = limit
 	}
 	for label, limit := range overrides {
-		if _, ok := out[label]; !ok || limit < minLabelBytes {
+		if _, ok := out[label]; !ok || limit < minLabelBytes || limit > maxLabelBytesCeiling {
 			continue
 		}
 		out[label] = limit

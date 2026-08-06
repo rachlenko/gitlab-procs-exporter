@@ -205,9 +205,18 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 		infoDesc: prometheus.NewDesc(
 			"gitlab_process_info",
 			"Metadata about the process including cmdline and parsed environ variables (scrubbed for secrets).",
-			append([]string{"pid", "name", "cmdline", "environ", "environ_truncated"}, ciJobLabelNames()...), nil,
+			infoLabelNames(), nil,
 		),
 	}
+}
+
+// infoLabelNames is gitlab_process_info's full label set, the widest one this
+// exporter emits. It is a function rather than an inline literal so the tests
+// can assert the MaxLabelBytes contract covers every name in it: a label added
+// here without a table entry silently passes through unbounded, and that is the
+// exact failure this contract exists to prevent.
+func infoLabelNames() []string {
+	return append([]string{"pid", "name", "cmdline", "environ", "environ_truncated"}, ciJobLabelNames()...)
 }
 
 // boundLabel applies this collector's limit table and counts what it cuts.
@@ -340,11 +349,20 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 		if b.Len() > 0 {
 			sep = len(", ")
 		}
-		// Stop at a pair boundary once the ceiling would be exceeded, so the
+		// Skip at a pair boundary once the ceiling would be exceeded, so the
 		// label is always valid UTF-8 and never over maxEnvironBytes.
+		//
+		// Skip rather than stop: only the VALUE is capped (maxEnvironValueLen),
+		// never the key, and the kernel allows env strings up to 128KB. One
+		// pathological key big enough to blow the ceiling on its own would
+		// otherwise end the loop on the first iteration and emit an EMPTY environ
+		// — dropping every other variable on the process, including the ones being
+		// debugged. Keys are sorted, so which variables that costs is arbitrary.
+		// Continuing keeps every pair that still fits; truncated already says the
+		// list is incomplete, which is equally true either way.
 		if b.Len()+sep+len(pair) > maxEnvironBytes {
 			truncated = true
-			break
+			continue
 		}
 		if sep > 0 {
 			b.WriteString(", ")

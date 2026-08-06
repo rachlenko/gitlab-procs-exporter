@@ -608,6 +608,16 @@ applies. Rejected:
   entirely marker. (The built-in `ci_job_id` / `ci_pipeline_id` defaults of 32
   sit below the floor on purpose: they bound ~7-byte numeric values and never
   truncate. An override has no such context, so it is held to the floor.)
+- a value **above 8143 bytes**, the ceiling. A cut value carries its 49-byte
+  marker *past* the limit, so anything higher can emit a label value over the
+  **8192-byte** `label_value_length_limit` this exporter is deployed with — and
+  Prometheus rejects the **whole scrape**, not the one value. Raising a limit is
+  meant to lose *less* data; trading truncated cmdlines for every metric on the
+  host is the opposite, so it fails the load instead.
+- an **unknown top-level key**, including a typo (`redact_key_substring`,
+  `max_label_byte`). This one matters most: a misspelled `redact_key_substrings`
+  would otherwise parse cleanly, yield *no* redaction filters, and bring the
+  exporter up healthy while publishing every value you asked to have scrubbed.
 
 The error names the offending entry, so a rejected config tells you which key to
 fix.
@@ -788,10 +798,10 @@ declare the volume (the rest of the container spec — `securityContext`, `ports
 
 The config is read **once at startup** and is **fail-fast**: a missing or
 malformed file makes the pod exit (visible as `CrashLoopBackOff` / in
-`kubectl logs`). An **unknown label name** under `max_label_bytes`, a
-non-positive value, or a value **below 49 bytes** is equally fatal — that is the
-most likely new cause of `CrashLoopBackOff` after a ConfigMap edit, and the
-error in `kubectl logs` names the offending key. After editing the ConfigMap,
+`kubectl logs`). An **unknown top-level key**, an **unknown label name** under
+`max_label_bytes`, a non-positive value, or a value **outside 49–8143 bytes** is
+equally fatal — that is the most likely new cause of `CrashLoopBackOff` after a
+ConfigMap edit, and the error in `kubectl logs` names the offending key. After editing the ConfigMap,
 restart the DaemonSet so the new config takes effect:
 
 ```bash

@@ -1,7 +1,9 @@
 # Config for the exporter's --config flag: extra environ redaction filters and
 # per-label size limits. Read once at startup, FAIL-FAST — an unreadable file, an
-# unknown label under max_label_bytes, or a limit below 49 bytes makes the pod
-# exit (CrashLoopBackOff); the error in `kubectl logs` names the offending key.
+# unknown TOP-LEVEL key (a misspelled `redact_key_substrings` would otherwise
+# silently disable every redaction filter), an unknown label under
+# max_label_bytes, or a limit outside 49-8143 bytes makes the pod exit
+# (CrashLoopBackOff); the error in `kubectl logs` names the offending key.
 # See the project README sections "Adding sensitive-data filters" and
 # "Label size contract". Edit and `kubectl rollout restart` the DaemonSet to apply.
 apiVersion: v1
@@ -19,8 +21,10 @@ data:
 
     # Raise or lower individual entries of the published label size contract.
     # Overridable names: name, cmdline, ci_job_name, ci_project_path,
-    # ci_job_id, ci_pipeline_id. Each override must be at least 49 bytes (the
-    # truncation marker's own size); omitted labels keep their default. Watch
+    # ci_job_id, ci_pipeline_id. Each override must be 49-8143 bytes: below the
+    # floor a cut value is mostly truncation marker, and above the ceiling a cut
+    # value can exceed the servicemonitor's 8192-byte labelValueLengthLimit,
+    # which costs the WHOLE scrape. Omitted labels keep their default. Watch
     # gitlab_exporter_label_truncations_total to see which limits are being hit.
     # max_label_bytes:
     #   ci_job_name: 512
