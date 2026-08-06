@@ -152,13 +152,16 @@ currently unbounded.
 
 **Files:** Modify `exporter/collector.go`, `exporter/collector_test.go`
 
-- [ ] **Step 1:** Update `TestBoundCmdline` to call `boundLabel("cmdline", …)`. Keep every existing
+- [x] **Step 1:** Update `TestBoundCmdline` to call `boundLabel("cmdline", …)`. Keep every existing
   assertion — especially the 3-byte-rune walk-back case — so coverage does not regress.
   Add one new assertion: the marker now reports the original length.
-- [ ] **Step 2: Run tests — MUST FAIL** (marker format changed)
-- [ ] **Step 3:** Delete `boundCmdline` and `maxCmdlineBytes`; move the limit into `MaxLabelBytes`. Update the `Collect` call site.
-- [ ] **Step 4: Run tests — MUST PASS**
-- [ ] **Step 5:** `make fmt && make lint`
+  Added `TestCollectCmdlineUsesSharedContract`: the `Collect` call site must emit the shared
+  contract's value, which is what actually pins the call site to `boundLabel`.
+- [x] **Step 2: Run tests — MUST FAIL** (marker format changed — `Collect` emitted `…[TRUNCATED]`
+  against the expected `…[len=4096;sha256=3f70d00f41ba]`)
+- [x] **Step 3:** Delete `boundCmdline` and `maxCmdlineBytes`; move the limit into `MaxLabelBytes`. Update the `Collect` call site.
+- [x] **Step 4: Run tests — MUST PASS** (`go test -race -cover ./exporter/` → 91.6% of statements)
+- [x] **Step 5:** `make fmt && make lint` (gofmt clean + `go vet` clean; `goimports` and `golangci-lint` binaries are not installed in this environment, so `make fmt`/`make lint` abort on the missing tool)
 
 ---
 

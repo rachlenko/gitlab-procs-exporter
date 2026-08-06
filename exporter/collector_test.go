@@ -433,43 +433,55 @@ func TestSanitizeLabelValue(t *testing.T) {
 	}
 }
 
+// TestBoundCmdline covers the cmdline label now that its dedicated truncator
+// (boundCmdline/maxCmdlineBytes) has been absorbed into the shared
+// boundLabel + MaxLabelBytes contract. Every assertion of the original test is
+// kept — especially the 3-byte-rune walk-back — so coverage of the panic this
+// guards against does not regress.
 func TestBoundCmdline(t *testing.T) {
-	if got := boundCmdline("short cmd"); got != "short cmd" {
+	maxCmdline := MaxLabelBytes["cmdline"]
+
+	if got := boundLabel("cmdline", "short cmd"); got != "short cmd" {
 		t.Errorf("short cmdline must pass through unchanged, got %q", got)
 	}
 	// 2-byte runes, twice the limit: the cut must land on a rune boundary.
-	long := strings.Repeat("ы", maxCmdlineBytes)
-	got := boundCmdline(long)
-	if len(got) > maxCmdlineBytes+len(environValueTruncMarker) {
-		t.Errorf("bounded cmdline is %d bytes, limit %d", len(got), maxCmdlineBytes+len(environValueTruncMarker))
+	long := strings.Repeat("ы", maxCmdline)
+	got := boundLabel("cmdline", long)
+	if ceiling := maxCmdline + maxMarkerLen; len(got) > ceiling {
+		t.Errorf("bounded cmdline is %d bytes, limit %d", len(got), ceiling)
 	}
 	if !utf8.ValidString(got) {
 		t.Errorf("bounded cmdline is not valid UTF-8: %q", got)
 	}
-	if !strings.HasSuffix(got, environValueTruncMarker) {
-		t.Errorf("expected visible truncation marker suffix, got tail %q", got[len(got)-20:])
+	if !strings.HasSuffix(got, markerFor(long)) {
+		t.Errorf("expected visible truncation marker suffix %q, got tail %q", markerFor(long), got[len(got)-40:])
+	}
+	// The marker reports the ORIGINAL length, not the truncated one — that is
+	// what the fingerprint marker buys over the old bare [TRUNCATED].
+	if !strings.Contains(got, fmt.Sprintf("len=%d", len(long))) {
+		t.Errorf("marker must report the original length %d, got tail %q", len(long), got[len(got)-40:])
 	}
 
-	// 3-byte runes: maxCmdlineBytes is not a multiple of 3, so the raw cut at
-	// maxCmdlineBytes lands MID-rune and the walk-back loop must fire. This is
+	// 3-byte runes: the cmdline limit is not a multiple of 3, so the raw cut at
+	// the limit lands MID-rune and the walk-back loop must fire. This is
 	// the case 2-byte runes (which align to the even limit) never exercise;
 	// without the walk-back the result would be invalid UTF-8 and re-introduce
-	// the MustNewConstMetric panic boundCmdline exists to prevent.
-	if maxCmdlineBytes%3 == 0 {
-		t.Fatalf("test assumes maxCmdlineBytes (%d) is not a multiple of 3", maxCmdlineBytes)
+	// the MustNewConstMetric panic this bounding exists to prevent.
+	if maxCmdline%3 == 0 {
+		t.Fatalf("test assumes the cmdline limit (%d) is not a multiple of 3", maxCmdline)
 	}
-	multi := strings.Repeat("世", maxCmdlineBytes) // 3 bytes each
-	gotMulti := boundCmdline(multi)
+	multi := strings.Repeat("世", maxCmdline) // 3 bytes each
+	gotMulti := boundLabel("cmdline", multi)
 	if !utf8.ValidString(gotMulti) {
 		t.Errorf("bounded 3-byte-rune cmdline is not valid UTF-8 (walk-back failed): %q", gotMulti)
 	}
-	if !strings.HasSuffix(gotMulti, environValueTruncMarker) {
-		t.Errorf("expected truncation marker suffix on 3-byte-rune cmdline, got tail %q", gotMulti[len(gotMulti)-20:])
+	if !strings.HasSuffix(gotMulti, markerFor(multi)) {
+		t.Errorf("expected truncation marker suffix on 3-byte-rune cmdline, got tail %q", gotMulti[len(gotMulti)-40:])
 	}
 	// The kept prefix must be strictly shorter than the naive cut, proving the
 	// walk-back trimmed the partial rune rather than leaving it.
-	if body := strings.TrimSuffix(gotMulti, environValueTruncMarker); len(body) >= maxCmdlineBytes {
-		t.Errorf("walk-back did not trim partial rune: prefix is %d bytes, expected < %d", len(body), maxCmdlineBytes)
+	if body := strings.TrimSuffix(gotMulti, markerFor(multi)); len(body) >= maxCmdline {
+		t.Errorf("walk-back did not trim partial rune: prefix is %d bytes, expected < %d", len(body), maxCmdline)
 	}
 }
 
@@ -533,6 +545,45 @@ func TestCollectBoundsNameAndCILabels(t *testing.T) {
 	}
 	if checked["cmdline"] != 1 {
 		t.Errorf("label %q was checked on %d metrics, expected 1 (gitlab_process_info)", "cmdline", checked["cmdline"])
+	}
+}
+
+// The cmdline emitted by Collect must come from the shared contract, not from
+// a private truncator of its own — one label with its own marker format is how
+// the contract quietly stops being one contract.
+func TestCollectCmdlineUsesSharedContract(t *testing.T) {
+	// Arrange: 2-byte runes at twice the limit, so truncation certainly fires.
+	cmdline := strings.Repeat("ы", MaxLabelBytes["cmdline"])
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        9183,
+		Name:       "runner",
+		CmdLine:    cmdline,
+		CreateTime: 400,
+		IsActive:   true,
+	})
+
+	// Act
+	collector := NewProcessCollector(store)
+	metricChan := make(chan prometheus.Metric, 24)
+	collector.Collect(metricChan)
+	close(metricChan)
+
+	// Assert
+	seen := false
+	for m := range metricChan {
+		val, ok := readMetricLabels(t, m)["cmdline"]
+		if !ok {
+			continue
+		}
+		seen = true
+		if want := boundLabel("cmdline", cmdline); val != want {
+			t.Errorf("emitted cmdline %q, want the shared-contract value %q", val, want)
+		}
+	}
+	if !seen {
+		t.Fatal("no metric carried a cmdline label")
 	}
 }
 

@@ -207,10 +207,6 @@ const (
 	// (unlimited), so this cap — not that limit — is what keeps the value small;
 	// an operator who sets label_value_length_limit below 8192 must lower this too.
 	maxEnvironBytes = 8192
-	// maxCmdlineBytes caps the gitlab_process_info "cmdline" label; a process
-	// with an enormous argv (ARG_MAX can reach 2MB) must not blow up the
-	// scrape the way an unbounded environ could.
-	maxCmdlineBytes = 2048
 )
 
 // environValueTruncMarker replaces a value longer than maxEnvironValueLen. It's
@@ -227,20 +223,6 @@ func sanitizeLabelValue(v string) string {
 		return v
 	}
 	return strings.ToValidUTF8(v, string(utf8.RuneError))
-}
-
-// boundCmdline caps a valid-UTF-8 cmdline at maxCmdlineBytes, cutting at a
-// rune boundary and appending environValueTruncMarker so truncation is
-// visible. Input must already be sanitized (valid UTF-8).
-func boundCmdline(s string) string {
-	if len(s) <= maxCmdlineBytes {
-		return s
-	}
-	i := maxCmdlineBytes
-	for i > 0 && !utf8.RuneStart(s[i]) {
-		i--
-	}
-	return s[:i] + environValueTruncMarker
 }
 
 // scrubEnviron renders the environ map as a comma-joined "k=v" string,
@@ -342,7 +324,7 @@ func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 		if environTruncated {
 			truncatedLabel = "1"
 		}
-		cmdline := boundCmdline(sanitizeLabelValue(p.CmdLine))
+		cmdline := boundLabel("cmdline", sanitizeLabelValue(p.CmdLine))
 		infoLabels := append([]string{pidStr, name, cmdline, environ, truncatedLabel}, ciVals...)
 		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
 	}
