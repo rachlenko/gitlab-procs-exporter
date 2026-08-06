@@ -30,7 +30,7 @@ To solve this, before the pipeline runner forcefully terminates the job, the wor
 
 *   **Sliding 10-Minute History Store**: Caches metrics and metadata (even for processes that have exited) for exactly 10 minutes, solving a major blind spot in transient process tracking.
 *   **Security Redaction Engine**: Automatically redacts environment variable values containing sensitive terms like `key`, `pass`, `token`, `secret`, `url`, `api`, etc., before exposing them — both on the `/metrics` endpoint and in the `/api/processes` / `/api/history` JSON responses.
-*   **Bounded Label Contract**: Every emitted label value is byte-capped by an explicit, documented, operator-overridable contract (see [Label size contract](#label-size-contract)), with a deterministic truncation marker that carries the original length and a `sha256` fingerprint, and a counter so a cut is never silent.
+*   **Bounded Label Contract**: Every emitted label value is byte-capped by an explicit, documented, operator-overridable contract (see [Label size contract](#label-size-contract)), with a truncation marker that carries the original length and a salted `sha256` fingerprint (deterministic within an exporter process, and not a commitment an attacker can confirm a guess against), and a counter so a cut is never silent.
 *   **Self-Contained Executable**: Embeds the frontend Single Page Application (SPA) dashboard within the compiled Go binary using the standard Go `embed` directive.
 *   **Cross-Platform Telemetry**: Utilizes `gopsutil` to parse `/proc` natively on Linux and system APIs on macOS.
 *   **`jobreport` CLI & `jobreport-web` UI**: A companion one-shot CLI ([`cmd/jobreport`](cmd/jobreport/README.md)) renders top-N process tables straight from Prometheus, and a single self-contained htmx web app ([`cmd/jobreport-web`](cmd/jobreport-web/README.md)) runs it from the browser against a chosen Prometheus URL, job id, and UTC time window.
@@ -257,7 +257,7 @@ UTF-8) and gets a marker carrying the **original** byte length and a fingerprint
 of the **original** value:
 
 ```
-<surviving prefix>…[len=<N>;sha256=<first 12 hex chars of sha256(original)>]
+<surviving prefix>…[len=<N>;sha256=<first 12 hex chars of the salted digest>]
 ```
 
 ```
@@ -265,12 +265,28 @@ of the **original** value:
 gitlab_process_info{name="ruby",cmdline="bundle exec sidekiq …[len=4096;sha256=3f70d00f41ba]",…} 1
 ```
 
-The fingerprint is what makes truncation reversible in practice: given a suspect
-series you can hash candidate values and confirm the match, which a bare
-`[TRUNCATED]` marker made impossible. Truncation is **deterministic** — identical
-input always yields an identical label value, so a long-lived process does not
-churn series across scrapes. A truncated value is at most
-`limit + 49` bytes (49 = the marker's worst case).
+The fingerprint is what keeps distinct over-long values **distinct**: two command
+lines identical up to and past the cut still land on separate series, where a
+bare `[TRUNCATED]` collapsed both into one. Truncation is **deterministic within
+one exporter process** — identical input always yields an identical label value,
+so a long-lived process does not churn series across scrapes. A truncated value
+is at most `limit + 49` bytes (49 = the marker's worst case).
+
+> **The digest is salted with a random value rolled once per exporter process,
+> and it is not a commitment to the original.** You cannot hash a candidate value
+> and confirm it against the exposition — and neither can anyone else, which is
+> the point. `cmdline` is raw argv, it is the one bounded label that receives **no
+> secret redaction at all**, and argv routinely carries credentials
+> (`--token=`, `-p<pass>`, an inline `--config=<json>`). An unsalted digest would
+> publish a verifiable commitment to the bytes *past* the cut — precisely the
+> bytes the limit hides — to every scraper, offline and unrate-limited, with the
+> surviving prefix handed over as a head start. That is the same oracle the
+> `environ` marker refuses to publish; the salt closes it everywhere.
+>
+> **Consequence to expect:** fingerprints are comparable only within one exporter
+> process. A restart re-rolls the salt, so a truncated value's series churns once
+> per restart, and the same value renders differently on two hosts. Only values
+> long enough to be cut pay this.
 
 **Cardinality trade-off:** the marker *preserves* distinctness, so two different
 over-long values stay two series. The old `[TRUNCATED]` marker *collapsed* them
@@ -842,8 +858,10 @@ or fail the scrape:
   distinguishable from "secret";
 - `[REDACTED]` **wins over truncation**, so a value already known to be a secret
   is named as one rather than reported as a length;
-- the joined label is capped at a hard **8192-byte** ceiling, stopping at a
-  variable boundary once it would be exceeded.
+- the joined label is capped at a hard **8192-byte** ceiling, **skipping** any
+  variable that would exceed it and continuing with the ones that still fit —
+  only the **value** is capped, never the key, so one pathological key big enough
+  to blow the ceiling on its own would otherwise drop every variable after it.
 
 > **Why `environ` drops the body while `name`/`cmdline`/`ci_*` keep a prefix.**
 > `environ` is the one label composed of arbitrary key/value pairs the exporter
@@ -857,16 +875,18 @@ or fail the scrape:
 >
 > **It carries no fingerprint either**, and that follows from the same premise.
 > The values that reach this path are exactly the ones the heuristics could not
-> classify, so they have to be assumed to be credential material — and an
-> unsalted `sha256` prefix of a secret, published on an endpoint every scraper
-> can read, is an unrate-limited offline oracle: an attacker who can guess a
-> structured, low-entropy value (a connection string off a known template, a
-> templated internal URL) confirms the guess against the digest. Refusing the
-> body but publishing a verifiable commitment to it would hand back most of what
-> refusing the body was protecting. The cost is that two distinct over-long
-> values of the same length now render identically, so `environ` gives up the
-> distinguishability that `name`/`cmdline`/`ci_*` keep — which is also a
-> cardinality saving, and the right trade only where the value may be a secret.
+> classify, so they have to be assumed to be credential material, and refusing
+> the body while publishing something derived from it hands back part of what
+> refusing the body was protecting. This is **not** the offline-oracle argument —
+> that one is closed for every label by salting the digest (see
+> [Truncation marker](#truncation-marker)). A salted digest is still an
+> **equality** oracle within one exporter process, and on an assumed-secret value
+> that alone leaks: a scraper sees that two processes hold the same credential,
+> or watches the digest change and learns exactly when one rotated. Length alone
+> supports neither. The cost is that two distinct over-long values of the same
+> length now render identically, so `environ` gives up the distinguishability
+> that `name`/`cmdline`/`ci_*` keep — which is also a cardinality saving, and the
+> right trade only where the value may be a secret.
 
 When the variable **list** is left incomplete — variables dropped because there
 were more than 100 or because the byte ceiling was hit — the companion

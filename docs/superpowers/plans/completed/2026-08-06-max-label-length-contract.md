@@ -462,6 +462,27 @@ them changed decisions the plan had made.
    `TestKubeCollectorHonoursJobNameOverride` asserts the override is applied and
    that the two labels agree.
 
+6. **`truncateWithFingerprint`'s digest is now salted (finishes what #4
+   started).** Correction #4 removed the unsalted `sha256` from the `environ`
+   marker as an offline confirmation oracle, and justified leaving it on
+   `name`/`cmdline`/`ci_*` on the grounds that those have a "known, non-secret
+   shape". That is false of `cmdline`: it is raw argv, and it is the **only**
+   bounded label that receives no secret redaction on any path —
+   `isSensitivePair`/`IsSecretValue` are never applied to it. Argv routinely
+   carries credentials (`--token=`, `-p<pass>`, an inline `--config=<json>`), so
+   a >2048-byte cmdline was publishing a verifiable commitment to the bytes past
+   the cut — the bytes the limit exists to hide — and handing over the surviving
+   2048-byte prefix as a head start. The pre-branch `boundCmdline` was a plain
+   slice, so this was a regression introduced by the very task that closed the
+   same hole for `environ`. `fingerprint()` now hashes a 32-byte
+   `crypto/rand` salt drawn once per process (fail-closed: it panics rather than
+   fall back to a predictable salt, which would silently restore the oracle).
+   Cost: fingerprints are comparable only within one exporter process, so a
+   restart churns truncated series once; the distinguishability the marker exists
+   for is unaffected. `environ` still carries no digest at all, and its rationale
+   is restated — a salted digest is still a within-process *equality* oracle, and
+   on an assumed-secret value that leaks shared credentials and rotation timing.
+
 **Still open:** the `ci_*` limits remain unvalidated estimates — see the section
 above. That caveat is now also carried in `README.md`'s label size contract
 table so it stays visible outside this file.

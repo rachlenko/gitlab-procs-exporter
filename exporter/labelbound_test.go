@@ -11,9 +11,46 @@ import (
 
 // fingerprintOf mirrors what the marker must carry so the tests assert the
 // documented format rather than whatever the implementation happens to emit.
+// It reads the live salt rather than recomputing a bare digest: the salt is the
+// security property (see TestFingerprintIsNotAPlainDigestOfTheValue), so a test
+// helper that hardcoded the unsalted form would fail the moment the property
+// holds.
 func fingerprintOf(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])[:truncFingerprintLen]
+	h := sha256.New()
+	h.Write(fingerprintSalt)
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil))[:truncFingerprintLen]
+}
+
+func TestFingerprintIsNotAPlainDigestOfTheValue(t *testing.T) {
+	// The marker must not be a verifiable commitment to the original. cmdline is
+	// raw argv, gets no secret redaction anywhere, and is published on /metrics:
+	// an unsalted digest would let anyone who can read the endpoint confirm a
+	// guessed credential sitting past the cut, offline and unrate-limited.
+	value := strings.Repeat("z", 4096) + "--token=s3cr3t"
+	unsalted := sha256.Sum256([]byte(value))
+	want := hex.EncodeToString(unsalted[:])[:truncFingerprintLen]
+
+	got := truncateWithFingerprint(value, MaxLabelBytes["cmdline"])
+
+	if strings.Contains(got, "sha256="+want) {
+		t.Errorf("marker carries an UNSALTED sha256 of the original, which is an offline "+
+			"confirmation oracle for the bytes past the cut: %q", got)
+	}
+}
+
+func TestFingerprintSaltIsDrawnNotZero(t *testing.T) {
+	// A zero or short salt is indistinguishable from no salt at the exposition
+	// and silently restores the oracle above.
+	if len(fingerprintSalt) != sha256.Size {
+		t.Fatalf("fingerprint salt is %d bytes, want %d", len(fingerprintSalt), sha256.Size)
+	}
+	for _, b := range fingerprintSalt {
+		if b != 0 {
+			return
+		}
+	}
+	t.Error("fingerprint salt is all zero bytes, so the digest is effectively unsalted")
 }
 
 func TestBoundLabelPassesThroughUnderLimit(t *testing.T) {
@@ -123,7 +160,7 @@ func TestBoundLabelMarkerCarriesOriginalLength(t *testing.T) {
 		t.Errorf("marker must not report the truncated length, got %q", got)
 	}
 	if !strings.Contains(got, "sha256="+fingerprintOf(value)) {
-		t.Errorf("marker must carry sha256(original) prefix %q, got %q", fingerprintOf(value), got)
+		t.Errorf("marker must carry the salted digest of the original %q, got %q", fingerprintOf(value), got)
 	}
 }
 

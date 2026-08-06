@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
@@ -117,15 +118,29 @@ func mergedMaxLabelBytes(overrides map[string]int) map[string]int {
 // rune boundary and appending a marker that carries the original byte length
 // and a fingerprint of the original value:
 //
-//	<prefix>…[len=<N>;sha256=<first 12 hex of sha256(original)>]
+//	<prefix>…[len=<N>;sha256=<first 12 hex of the SALTED digest of original>]
 //
-// The fingerprint is what makes truncation reversible in practice: given a
-// suspect series you can hash candidate values and confirm the match, which a
-// bare "[TRUNCATED]" makes impossible. The trade-off is cardinality — distinct
-// over-long values stay distinct instead of collapsing into one series.
+// The fingerprint is what keeps distinct over-long values distinct: two command
+// lines identical up to and past the cut still land on separate series, where a
+// bare "[TRUNCATED]" collapses both into one. The trade-off is cardinality —
+// distinct over-long values stay distinct instead of collapsing into one series.
 //
-// Truncation is deterministic: identical input always yields an identical
-// label value, or the series would churn on every scrape.
+// The digest is SALTED (see fingerprintSalt), and that is load-bearing rather
+// than incidental. "cmdline" is in this table and is the one label here that
+// receives NO secret redaction anywhere: it is raw argv, and argv routinely
+// carries credentials (--token=, -p<pass>, an inline --config=<json>). An
+// UNSALTED sha256 of the original would publish, on an endpoint every scraper
+// can read, a verifiable commitment to the bytes PAST the cut — exactly the
+// bytes the limit hides. That is the unrate-limited offline confirmation oracle
+// environTruncMarker refuses to publish, and it is worse here: the prefix is
+// handed over too, so only the tail has to be guessed.
+//
+// Truncation is deterministic within one exporter process: identical input
+// always yields an identical label value, or the series would churn on every
+// scrape. It is deliberately NOT deterministic across processes — a restart
+// re-rolls the salt, so a truncated value's series churns once per restart and
+// the same value renders differently on two hosts. That is the price of closing
+// the oracle, and only values long enough to be cut pay it.
 //
 // Input must already be sanitized (see sanitizeLabelValue). A max of zero or
 // less means "no limit configured" and passes the value through; operator
@@ -160,19 +175,24 @@ func truncateWithFingerprint(s string, max int) string {
 //
 // It carries no fingerprint either, and that is the same decision rather than a
 // separate one. The values reaching here are exactly the ones the heuristics
-// could NOT classify, so they must be assumed to be credential material; an
-// unsalted sha256 prefix of one is a commitment to it, and /metrics is readable
-// by every scraper. For a structured, low-entropy secret — a connection string
-// off a known template, a templated internal URL — that is an unrate-limited
-// offline oracle to confirm a guessed value against. Refusing the body but
-// publishing a verifiable digest of it would give back most of what dropping
-// the body was protecting. Length alone supports no such confirmation.
+// could NOT classify, so they must be assumed to be credential material, and
+// /metrics is readable by every scraper. Refusing the body but publishing
+// anything derived from it gives back part of what dropping the body was
+// protecting.
+//
+// Note this is NOT the offline-oracle argument, which truncateWithFingerprint
+// closes for every label by salting the digest. A salted digest is still an
+// EQUALITY oracle within one exporter process, and on an assumed-secret value
+// that alone leaks: a scraper can see that two processes hold the same
+// credential, or watch the digest change and learn exactly when one rotated.
+// Length alone supports neither.
 //
 // Cost of dropping it: two distinct over-long values of the same length now
 // render identically, so environ loses the distinguishability that
 // truncateWithFingerprint preserves. That is a real loss for debugging and a
-// cardinality WIN, and it is the right trade only here — labels with a known,
-// non-secret shape (name, cmdline, ci_*) keep both prefix and fingerprint.
+// cardinality WIN, and it is the right trade only here — the labels in the
+// MaxLabelBytes table are described rather than hidden, so keeping both prefix
+// and (salted) fingerprint costs them nothing they were not already publishing.
 //
 // The result is always shorter than maxEnvironValueLen for any value that
 // reaches it, so it can only shrink the joined label.
@@ -180,10 +200,38 @@ func environTruncMarker(s string) string {
 	return "[TRUNCATED;len=" + strconv.Itoa(len(s)) + "]"
 }
 
-// fingerprint returns the leading hex chars of sha256(s) used by both markers.
+// fingerprintSalt is rolled once per exporter process and prefixed into every
+// digest truncateWithFingerprint publishes. It is never exposed: not in a
+// label, not in a metric, not in a log line. The moment it is, the offline
+// confirmation oracle it exists to close is back.
+//
+// It is a process-lifetime value on purpose. A persisted or derived salt (from
+// the hostname, the boot id, a config field) would be recoverable by the same
+// attacker who reads /metrics, which makes it decoration rather than a salt.
+var fingerprintSalt = mustFingerprintSalt()
+
+// mustFingerprintSalt draws the salt, failing the process if it cannot. This
+// fails CLOSED deliberately: the only alternative to a real salt is a
+// predictable one, and a predictable salt silently restores the very oracle the
+// salt removes — a truncated cmdline would again carry a confirmable commitment
+// to the credential past the cut, with nothing in the exposition to say so.
+func mustFingerprintSalt() []byte {
+	salt := make([]byte, sha256.Size)
+	if _, err := rand.Read(salt); err != nil {
+		panic("exporter: cannot draw the label fingerprint salt: " + err.Error())
+	}
+	return salt
+}
+
+// fingerprint returns the leading hex chars of the salted digest of s. The
+// salt is hashed FIRST so the digest commits to the salt as well as the value;
+// appending it would leave the construction open to a length-extension shortcut
+// on the value.
 func fingerprint(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])[:truncFingerprintLen]
+	h := sha256.New()
+	h.Write(fingerprintSalt)
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil))[:truncFingerprintLen]
 }
 
 // truncationObserver is notified every time boundLabelWith actually cuts a
