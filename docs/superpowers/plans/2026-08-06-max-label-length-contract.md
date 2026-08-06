@@ -112,7 +112,7 @@ series you can hash candidate values and confirm the match, which a bare
 - `func truncateWithFingerprint(s string, max int) string` — the primitive.
 - `var MaxLabelBytes map[string]int`
 
-- [ ] **Step 1: Write the failing tests** — `exporter/labelbound_test.go`:
+- [x] **Step 1: Write the failing tests** — `exporter/labelbound_test.go`:
   - value shorter than the limit passes through **byte-identical**
   - value of **exactly** the limit passes through unchanged (guard is `>`, not `>=`)
   - value of limit+1 is truncated, and the result is **valid UTF-8**
@@ -123,10 +123,10 @@ series you can hash candidate values and confirm the match, which a bare
   - unknown label name ⇒ unchanged, even when very long
   - empty string ⇒ empty string, no marker
   - **the bounded result including the marker never exceeds `max + maxMarkerLen`** — assert a hard ceiling; a marker appended past the limit is the classic way a "bounded" value stops being bounded
-- [ ] **Step 2: Run tests — MUST FAIL** (`go test ./exporter/ -run TestBoundLabel`)
-- [ ] **Step 3: Implement** `labelbound.go`. Hash the **original** string before cutting. Walk back with `utf8.RuneStart` exactly as `boundCmdline` does.
-- [ ] **Step 4: Run tests — MUST PASS**
-- [ ] **Step 5:** `make fmt && make lint`
+- [x] **Step 2: Run tests — MUST FAIL** (`go test ./exporter/ -run TestBoundLabel`)
+- [x] **Step 3: Implement** `labelbound.go`. Hash the **original** string before cutting. Walk back with `utf8.RuneStart` exactly as `boundCmdline` does.
+- [x] **Step 4: Run tests — MUST PASS**
+- [x] **Step 5:** `make fmt && make lint` (gofmt clean + `go vet` clean; `goimports` and `golangci-lint` binaries are not installed in this environment, so `make fmt`/`make lint` abort on the missing tool)
 
 ---
 
