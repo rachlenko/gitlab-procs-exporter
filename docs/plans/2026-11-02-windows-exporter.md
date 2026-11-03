@@ -36,11 +36,11 @@ Extend `gitlab-procs-exporter` to fully support Microsoft Windows as a first-cla
 - Create: `exporter/procio_windows_test.go`
 - Modify: `exporter/procio.go`
 
-- [ ] 1. Move Linux-specific `/proc` walking and parsing logic from `exporter/procio.go` into `exporter/procio_linux.go` with `//go:build linux` directive. Keep `IOStats` struct and shared constants/comments in `exporter/procio.go`.
-- [ ] 2. Implement `exporter/procio_windows.go` with `//go:build windows`: implement `SelfIO(procRoot string, pid int32) (IOStats, error)`. On Windows, process-level I/O counters (`GetProcessIoCounters`) measure the target process itself rather than reaped child processes, so `SelfIO` safely returns `IOStats{}, nil`.
-- [ ] 3. Implement `exporter/procio_other.go` with `//go:build !linux && !windows` returning `IOStats{}, nil`.
-- [ ] 4. Create `exporter/procio_windows_test.go` (and ensure `exporter/procio_test.go` has `//go:build linux` or tests shared logic) verifying `SelfIO` behavior on Windows.
-- [ ] 5. Run tests: verify `go test ./exporter/...` passes on Linux and `GOOS=windows go test -c ./exporter/...` compiles cleanly.
+- [x] 1. Move Linux-specific `/proc` walking and parsing logic from `exporter/procio.go` into `exporter/procio_linux.go` with `//go:build linux` directive. Keep `IOStats` struct and shared constants/comments in `exporter/procio.go`.
+- [x] 2. Implement `exporter/procio_windows.go` with `//go:build windows`: implement `SelfIO(procRoot string, pid int32) (IOStats, error)`. On Windows, process-level I/O counters (`GetProcessIoCounters`) measure the target process itself rather than reaped child processes, so `SelfIO` safely returns `IOStats{}, nil`.
+- [x] 3. Implement `exporter/procio_other.go` with `//go:build !linux && !windows` returning `IOStats{}, nil`.
+- [x] 4. Create `exporter/procio_windows_test.go` (and ensure `exporter/procio_test.go` has `//go:build linux` or tests shared logic) verifying `SelfIO` behavior on Windows.
+- [x] 5. Run tests: verify `go test ./exporter/...` passes on Linux and `GOOS=windows go test -c ./exporter/...` compiles cleanly.
 
 ### Task 2: Platform abstraction for cgroup and container probing
 
