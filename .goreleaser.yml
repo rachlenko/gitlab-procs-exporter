@@ -9,6 +9,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -26,6 +27,22 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+  - id: jobreport-web
+    main: ./cmd/jobreport-web
+    binary: jobreport-web
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -37,7 +54,12 @@ archives:
     ids:
       - gitlab-procs-exporter
       - jobreport
+      - jobreport-web
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
 
 nfpms:
   - id: gitlab-procs-exporter

@@ -93,16 +93,16 @@ Extend `gitlab-procs-exporter` to fully support Microsoft Windows as a first-cla
 - Modify: `.goreleaser.yml`
 - Modify: `Makefile`
 
-- [ ] 1. In `.goreleaser.yml`, add `windows` to `goos` under `builds` for `gitlab-procs-exporter`, `jobreport`, and `jobreport-web`.
-- [ ] 2. In `.goreleaser.yml`, add a format override for `goos: windows` producing `.zip` archives.
-- [ ] 3. In `Makefile`, add `build-windows` target:
+- [x] 1. In `.goreleaser.yml`, add `windows` to `goos` under `builds` for `gitlab-procs-exporter`, `jobreport`, and `jobreport-web`.
+- [x] 2. In `.goreleaser.yml`, add a format override for `goos: windows` producing `.zip` archives.
+- [x] 3. In `Makefile`, add `build-windows` target:
   ```makefile
   build-windows:
   	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.revision=$(REV) -s -w" -o .bin/gitlab-procs-exporter.exe
   	GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o .bin/jobreport.exe ./cmd/jobreport
   	GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o .bin/jobreport-web.exe ./cmd/jobreport-web
   ```
-- [ ] 4. Run `make build-windows` and verify `.bin/gitlab-procs-exporter.exe`, `.bin/jobreport.exe`, and `.bin/jobreport-web.exe` are built.
+- [x] 4. Run `make build-windows` and verify `.bin/gitlab-procs-exporter.exe`, `.bin/jobreport.exe`, and `.bin/jobreport-web.exe` are built.
 
 ### Task 6: Documentation and acceptance verification
 

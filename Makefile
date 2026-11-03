@@ -30,6 +30,12 @@ build-jobreport-web:
 build-jobreport-linux:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o .bin/jobreport-linux-amd64 ./cmd/jobreport
 
+# Cross-compile Windows binaries (.exe).
+build-windows:
+	GOOS=windows GOARCH=amd64 go build -ldflags "-X main.revision=$(REV) -s -w" -o .bin/gitlab-procs-exporter.exe
+	GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o .bin/jobreport.exe ./cmd/jobreport
+	GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o .bin/jobreport-web.exe ./cmd/jobreport-web
+
 # Run tests with coverage and exclude mocks
 test:
 	go clean -testcache
@@ -108,4 +114,4 @@ release: test
 	 git push origin "$$version"; \
 	 echo "==> pushed $$version; CI will build the release artifacts"
 
-.PHONY: all build build-jobreport build-jobreport-web build-jobreport-linux test lint fmt tools race version release
+.PHONY: all build build-jobreport build-jobreport-web build-jobreport-linux build-windows test lint fmt tools race version release
