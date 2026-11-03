@@ -124,6 +124,112 @@ flags (`-addr`, `-store`, `-debug`) and the internal-tool/SSRF caveat.
 
 ---
 
+## Windows Support
+
+`gitlab-procs-exporter` provides full first-class support for Microsoft Windows (Windows Server 2016+, Windows 10+). It collects CPU, memory, and process metadata, extracts process environment variables and GitLab CI job labels (`CI_JOB_ID`, `CI_PROJECT_PATH`, etc.) via Windows Process Environment Block (PEB) inspection, and serves the Prometheus `/metrics` endpoint, REST APIs, and embedded SPA dashboard.
+
+### Interactive Execution
+
+You can run the exporter directly from PowerShell or Command Prompt for ad-hoc debugging or foreground execution:
+
+```powershell
+# Run interactively with default settings (port 8000, 1m scrape interval)
+.\gitlab-procs-exporter.exe --port=8000 --interval=1m
+
+# Run with an optional YAML configuration file
+.\gitlab-procs-exporter.exe --port=8000 --interval=1m --config=C:\gitlab-procs-exporter\config.yaml
+```
+
+Press `Ctrl+C` to cleanly shut down the exporter.
+
+### Windows Service Management
+
+For production deployments, `gitlab-procs-exporter` integrates natively with the Windows Service Control Manager (SCM). The binary can install, configure, and remove its own background Windows Service.
+
+#### Installing as a Windows Service
+
+Open an elevated PowerShell or Command Prompt ("Run as Administrator") and execute:
+
+```powershell
+# Install and register the Windows Service
+.\gitlab-procs-exporter.exe --deploy-as-windows-service --port=8000 --interval=1m
+```
+
+> [!NOTE]
+> `--deploy-as-service` is also supported as an OS-agnostic alias for `--deploy-as-windows-service`.
+
+Supported deployment flags:
+- `--service-name`: Name of the Windows Service (default: `gitlab-procs-exporter`).
+- `--service-user`: Account under which the service runs (default: `LocalSystem` / `NT AUTHORITY\SYSTEM`).
+- `--port`: Port to listen on (default: `8000`).
+- `--interval`: Process scraping frequency (default: `1m`).
+- `--config`: Optional path to a YAML configuration file.
+
+When installed, the service is registered with:
+- **Startup Type**: Automatic (`SERVICE_AUTO_START`).
+- **Display Name**: `GitLab Process History Exporter`.
+- **Failure Recovery**: Configured to restart the service automatically if it encounters an unhandled crash.
+
+#### Managing the Service
+
+Use standard Windows administration tools to manage the background service:
+
+```powershell
+# Using PowerShell Service Cmdlets
+Get-Service gitlab-procs-exporter
+Start-Service gitlab-procs-exporter
+Stop-Service gitlab-procs-exporter
+Restart-Service gitlab-procs-exporter
+
+# Using sc.exe
+sc.exe query gitlab-procs-exporter
+sc.exe stop gitlab-procs-exporter
+sc.exe start gitlab-procs-exporter
+```
+
+You can also inspect or manage the service via the Windows Services MMC snap-in (`services.msc`).
+
+#### Uninstalling the Windows Service
+
+To stop and remove the service from the Windows Service Control Manager:
+
+```powershell
+# Run from an elevated PowerShell or Command Prompt
+.\gitlab-procs-exporter.exe --uninstall
+```
+
+### Required Privileges
+
+To inspect the command lines and environment variables of processes owned by different user accounts or container/runner isolation contexts (such as GitLab Runner build helper processes), the exporter process requires administrative permissions:
+
+- **Windows Service Mode**: The default service account is `LocalSystem` (`NT AUTHORITY\SYSTEM`), which automatically holds `SeDebugPrivilege`. No extra user privilege configuration is required.
+- **Interactive Mode**: Launch PowerShell or Command Prompt with **Run as administrator** to ensure `SeDebugPrivilege` is available. Without elevated privileges, the exporter can still scrape processes running under the current user's session, but process environment variables for other user accounts cannot be read.
+
+### Prometheus Scrape Configuration
+
+Add the Windows runner host to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'gitlab-procs-windows'
+    scrape_interval: 1m
+    scrape_timeout: 30s
+    static_configs:
+      - targets: ['windows-runner.example.internal:8000']
+        labels:
+          os: 'windows'
+          role: 'gitlab-runner'
+```
+
+For defense in depth against excessive label cardinality, apply label size bounds:
+
+```yaml
+    label_value_length_limit: 8192
+    label_limit: 32
+```
+
+---
+
 ## Metrics reference
 
 Everything below is served on `GET /metrics` (default port `8000`) in the

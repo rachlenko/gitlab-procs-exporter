@@ -4,17 +4,21 @@ Prometheus process exporter with an active 10-minute sliding cache in-memory buf
 
 ## Build and Quality Verification
 * Build binaries: `make build` (produces both `.bin/gitlab-procs-exporter` and `.bin/jobreport-web`; `make build-jobreport` / `make build-jobreport-web` build the companions individually)
+* Cross-compile Windows binaries: `make build-windows` (produces `.bin/gitlab-procs-exporter.exe`, `.bin/jobreport.exe`, and `.bin/jobreport-web.exe`) or `GOOS=windows go build ./...`
 * Format code: `make fmt`
 * Run linters: `make lint`
 * Run unit tests: `make test`
 
 ## Project Architecture
-* `main.go` — Entrypoint, configuration setup, background scrapers, and embedded Web/REST servers.
+* `main.go` — Entrypoint, configuration setup, background scrapers, Windows service dispatcher, and embedded Web/REST servers. On Windows, detects if launched by SCM (`deploy.IsWindowsService()`) to run under `deploy.RunWindowsService` with graceful stop handling, or runs interactively in console mode.
 * `exporter/history.go` — Sliding 10-minute `HistoryStore` buffer designed with thread-safe lock pools.
 * `exporter/collector.go` — Custom Prometheus exporter metrics reporting system with credential filtering rules.
 * `exporter/labelbound.go` — The published per-label size contract (`MaxLabelBytes`), the `truncateWithFingerprint` / `environTruncMarker` primitives and `boundLabelWith`.
 * `exporter/config.go` — `--config` YAML loader with fail-fast validation of `redact_key_substrings` and `max_label_bytes`.
 * `exporter/kube_collector.go` — In-cluster-only `kuber_*` job-resource metrics. Registered on the same registry as `ProcessCollector`, so a panic here takes the whole exporter down; its `job_name` label is `/proc`-sourced and gets the same sanitize+bound treatment. Build it with `NewKubeCollectorWithConfig` — `job_name` is the same `CI_JOB_NAME` value as `ci_job_name`, so it must be bound with the same overridden limit and count its cuts on the same counter; `NewKubeCollector` keeps the DEFAULT table and counts nothing.
+* `exporter/procio_linux.go`, `exporter/procio_windows.go`, `exporter/procio_other.go` — Platform-specific process I/O attribution implementations (`SelfIO`). Linux (`//go:build linux`) sums `/proc/<pid>/task/<tid>/io` over live threads to measure self-IO without child inheritance; Windows (`//go:build windows`) and other platform stubs safely return zero `IOStats` as Windows process I/O counters measure the target process itself.
+* `exporter/cgroup_linux.go`, `exporter/cgroup_windows.go`, `exporter/cgroup_other.go` — Platform-specific container/cgroup probing (`ProcessPodUID`). Linux (`//go:build linux`) inspects `/proc/<pid>/cgroup` for Kubernetes pod UIDs; Windows (`//go:build windows`) and other OS stubs safely return empty string.
+* `deploy/service_windows.go`, `deploy/service_stub.go` — Windows Service Control Manager (SCM) lifecycle support (`golang.org/x/sys/windows/svc` and `mgr`). `service_windows.go` (`//go:build windows`) implements `IsWindowsService` detection, `RunWindowsService` dispatcher with context cancellation on service stop/shutdown, `InstallWindowsService` (configuring auto-start and failure recovery restart actions), and `UninstallWindowsService`. `service_stub.go` (`//go:build !windows`) provides non-Windows stubs returning descriptive errors.
 * `dashboard/` — Front-end glassmorphic SPA utilizing Chart.js rendering timeline charts.
 * `internal/jobreport/` — Shared jobreport engine (Prometheus queries, log parsing, table rendering). Entry point `Main(argv []string) int` drives both the CLI and the web UI.
 * `cmd/jobreport/` — Thin wrapper binary; `main` delegates to `internal/jobreport.Main`.

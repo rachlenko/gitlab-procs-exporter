@@ -110,10 +110,10 @@ Extend `gitlab-procs-exporter` to fully support Microsoft Windows as a first-cla
 - Modify: `README.md`
 - Modify: `CLAUDE.md`
 
-- [ ] 1. In `README.md`, add a dedicated "Windows Support" section detailing:
+- [x] 1. In `README.md`, add a dedicated "Windows Support" section detailing:
   - Interactive execution via Command Prompt / PowerShell.
   - Installing and managing the background Windows Service (`--deploy-as-windows-service`, `--uninstall`).
   - Required privileges (Administrator / `LocalSystem` with `SeDebugPrivilege` to inspect all process environments).
   - Example Prometheus scrape config for Windows runner hosts.
-- [ ] 2. In `CLAUDE.md`, document the Windows service architecture and platform build tags (`procio_windows.go`, `service_windows.go`).
-- [ ] 3. Run full verification: `make fmt && make lint && make test && make build && make build-windows`.
+- [x] 2. In `CLAUDE.md`, document the Windows service architecture and platform build tags (`procio_windows.go`, `service_windows.go`).
+- [x] 3. Run full verification: `make fmt && make lint && make test && make build && make build-windows`.
