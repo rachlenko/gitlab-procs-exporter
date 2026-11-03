@@ -363,9 +363,7 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 		// Resolve the owning pod UID from cgroup (in-cluster only).
 		podUID := ""
 		if inCluster {
-			if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid)); err == nil {
-				podUID = exporter.PodUIDFromCgroup(string(data))
-			}
+			podUID = exporter.ProcessPodUID(pid)
 		}
 
 		// Add sample to HistoryStore

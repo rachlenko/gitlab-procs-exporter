@@ -51,11 +51,11 @@ Extend `gitlab-procs-exporter` to fully support Microsoft Windows as a first-cla
 - Create: `exporter/cgroup_probe_test.go`
 - Modify: `main.go`
 
-- [ ] 1. Create `exporter/cgroup_linux.go` (`//go:build linux`) implementing `ProcessPodUID(pid int32) string` by reading `/proc/%d/cgroup` and calling `PodUIDFromCgroup`.
-- [ ] 2. Create `exporter/cgroup_windows.go` (`//go:build windows`) and `exporter/cgroup_other.go` (`//go:build !linux && !windows`) implementing `ProcessPodUID(pid int32) string` returning `""`.
-- [ ] 3. In `main.go`, replace the direct `os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))` with `exporter.ProcessPodUID(pid)`.
-- [ ] 4. Add `exporter/cgroup_probe_test.go` asserting `ProcessPodUID` returns empty string safely on nonexistent processes or non-Linux platforms.
-- [ ] 5. Run tests: verify `go test ./...` passes on Linux and `GOOS=windows go build ./...` compiles cleanly.
+- [x] 1. Create `exporter/cgroup_linux.go` (`//go:build linux`) implementing `ProcessPodUID(pid int32) string` by reading `/proc/%d/cgroup` and calling `PodUIDFromCgroup`.
+- [x] 2. Create `exporter/cgroup_windows.go` (`//go:build windows`) and `exporter/cgroup_other.go` (`//go:build !linux && !windows`) implementing `ProcessPodUID(pid int32) string` returning `""`.
+- [x] 3. In `main.go`, replace the direct `os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))` with `exporter.ProcessPodUID(pid)`.
+- [x] 4. Add `exporter/cgroup_probe_test.go` asserting `ProcessPodUID` returns empty string safely on nonexistent processes or non-Linux platforms.
+- [x] 5. Run tests: verify `go test ./...` passes on Linux and `GOOS=windows go build ./...` compiles cleanly.
 
 ### Task 3: Windows Service Control Manager (SCM) support in deploy package
 
