@@ -64,14 +64,14 @@ Extend `gitlab-procs-exporter` to fully support Microsoft Windows as a first-cla
 - Create: `deploy/service_windows_test.go`
 - Create: `deploy/service_stub.go`
 
-- [ ] 1. Create `deploy/service_windows.go` (`//go:build windows`) using `golang.org/x/sys/windows/svc` and `golang.org/x/sys/windows/svc/mgr`:
+- [x] 1. Create `deploy/service_windows.go` (`//go:build windows`) using `golang.org/x/sys/windows/svc` and `golang.org/x/sys/windows/svc/mgr`:
   - `IsWindowsService() bool`: calls `svc.IsWindowsService()`.
   - `RunWindowsService(serviceName string, runFn func(ctx context.Context) error) error`: implements `svc.Handler`, handles `svc.Stop` and `svc.Shutdown`, signals context cancellation to `runFn`, and manages status transitions (`StartPending`, `Running`, `StopPending`, `Stopped`).
   - `InstallWindowsService(w io.Writer, cfg ServiceConfig) error`: connects to Windows SCM via `mgr.Connect()`, creates the service with auto-start (`mgr.StartAutomatic`), display name "GitLab Process History Exporter", description, binary path, and arguments (`--port`, `--interval`, `--config`), and configures service restart on failure.
   - `UninstallWindowsService(w io.Writer, cfg ServiceConfig) error`: opens service in SCM, issues stop request if running, and deletes the service.
-- [ ] 2. Create `deploy/service_stub.go` (`//go:build !windows`): stubs for `IsWindowsService` (returns `false`), `RunWindowsService`, `InstallWindowsService`, and `UninstallWindowsService` (returning descriptive errors that Windows is required).
-- [ ] 3. Create `deploy/service_windows_test.go` verifying ServiceConfig default resolution and command-line argument formatting for Windows services.
-- [ ] 4. Run tests: verify `go test ./deploy/...` passes on Linux and `GOOS=windows go test -c ./deploy/...` compiles cleanly.
+- [x] 2. Create `deploy/service_stub.go` (`//go:build !windows`): stubs for `IsWindowsService` (returns `false`), `RunWindowsService`, `InstallWindowsService`, and `UninstallWindowsService` (returning descriptive errors that Windows is required).
+- [x] 3. Create `deploy/service_windows_test.go` verifying ServiceConfig default resolution and command-line argument formatting for Windows services.
+- [x] 4. Run tests: verify `go test ./deploy/...` passes on Linux and `GOOS=windows go test -c ./deploy/...` compiles cleanly.
 
 ### Task 4: Integrate Windows service execution and CLI flags in main.go
 
