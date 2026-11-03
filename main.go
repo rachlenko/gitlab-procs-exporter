@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -28,92 +32,210 @@ var dashboardHTML embed.FS
 // here and the real version is recovered from the embedded build info instead.
 var revision = "dev"
 
-func main() {
-	port := flag.Int("port", 8000, "Port to run the exporter on")
-	scrapeInterval := flag.Duration("interval", 10*time.Second, "Scrape interval")
-	showVersion := flag.Bool("version", false, "Print version information and exit")
+type cliOptions struct {
+	port            int
+	scrapeInterval  time.Duration
+	showVersion     bool
+	checkDeps       bool
+	deploySystemd   bool
+	deployWindows   bool
+	deployService   bool
+	uninstall       bool
+	update          bool
+	serviceName     string
+	serviceUser     string
+	kubeletInsecure bool
+	configPath      string
+}
 
-	checkDeps := flag.Bool("check-dependencies", false,
+type actionType int
+
+const (
+	actionRun actionType = iota
+	actionVersion
+	actionCheckDeps
+	actionDeploySystemd
+	actionDeployWindows
+	actionUninstallSystemd
+	actionUninstallWindows
+	actionUpdate
+)
+
+func defaultServiceUser(goos string) string {
+	if goos == "windows" {
+		return "LocalSystem"
+	}
+	return "root"
+}
+
+func parseFlags(fs *flag.FlagSet, args []string, goos string) (*cliOptions, error) {
+	opts := &cliOptions{}
+	fs.IntVar(&opts.port, "port", 8000, "Port to run the exporter on")
+	fs.DurationVar(&opts.scrapeInterval, "interval", 10*time.Second, "Scrape interval")
+	fs.BoolVar(&opts.showVersion, "version", false, "Print version information and exit")
+
+	fs.BoolVar(&opts.checkDeps, "check-dependencies", false,
 		"Verify prerequisites (curl or wget) for --update, then exit")
-	deploySystemd := flag.Bool("deploy-as-systemd-service", false,
+	fs.BoolVar(&opts.deploySystemd, "deploy-as-systemd-service", false,
 		"Install the exporter as a systemd service (Linux, requires root), then exit")
-	uninstall := flag.Bool("uninstall", false,
-		"Stop/disable the systemd service and remove its unit file (Linux, requires root), then exit")
-	update := flag.Bool("update", false,
+	fs.BoolVar(&opts.deployWindows, "deploy-as-windows-service", false,
+		"Install the exporter as a Windows service (Windows, requires Administrator), then exit")
+	fs.BoolVar(&opts.deployService, "deploy-as-service", false,
+		"Install the exporter as a system service (systemd on Linux, Windows service on Windows), then exit")
+	fs.BoolVar(&opts.uninstall, "uninstall", false,
+		"Stop/disable and remove the system service (Linux, requires root; Windows, requires Administrator), then exit")
+	fs.BoolVar(&opts.update, "update", false,
 		"Update to the latest release .deb via dpkg and restart the service (Linux, requires root), then exit")
-	serviceName := flag.String("service-name", "gitlab-procs-exporter",
-		"systemd unit name")
-	serviceUser := flag.String("service-user", "root",
-		"User the service runs as (root is required to read all processes' env/IO)")
-	kubeletInsecure := flag.Bool("kubelet-insecure", true,
+	fs.StringVar(&opts.serviceName, "service-name", "gitlab-procs-exporter",
+		"Service name (systemd unit name on Linux, service name on Windows)")
+	fs.StringVar(&opts.serviceUser, "service-user", defaultServiceUser(goos),
+		"User the service runs as (root on Linux, LocalSystem on Windows)")
+	fs.BoolVar(&opts.kubeletInsecure, "kubelet-insecure", true,
 		"Skip TLS verification when querying the node-local kubelet (in-cluster only)")
-	configPath := flag.String("config", "",
-		"Path to a YAML config file with extra environ redaction rules and per-label size limits (max_label_bytes); an unreadable file or an invalid entry aborts startup (also baked into the systemd unit when used with --deploy-as-systemd-service)")
-	flag.Parse()
+	fs.StringVar(&opts.configPath, "config", "",
+		"Path to a YAML config file with extra environ redaction rules and per-label size limits (max_label_bytes); an unreadable file or an invalid entry aborts startup (also baked into the service definition when deployed)")
 
-	if *showVersion {
-		fmt.Println(version())
-		return
+	err := fs.Parse(args)
+	return opts, err
+}
+
+func resolveAction(goos string, opts *cliOptions) actionType {
+	if opts.showVersion {
+		return actionVersion
+	}
+	if opts.checkDeps {
+		return actionCheckDeps
+	}
+	if opts.deployWindows {
+		return actionDeployWindows
+	}
+	if opts.deploySystemd {
+		if goos == "windows" {
+			return actionDeployWindows
+		}
+		return actionDeploySystemd
+	}
+	if opts.deployService {
+		if goos == "windows" {
+			return actionDeployWindows
+		}
+		return actionDeploySystemd
+	}
+	if opts.uninstall {
+		if goos == "windows" {
+			return actionUninstallWindows
+		}
+		return actionUninstallSystemd
+	}
+	if opts.update {
+		return actionUpdate
+	}
+	return actionRun
+}
+
+func main() {
+	opts, err := parseFlags(flag.CommandLine, os.Args[1:], runtime.GOOS)
+	if err != nil {
+		log.Fatalf("flag parse error: %v", err)
 	}
 
-	if *checkDeps {
+	switch resolveAction(runtime.GOOS, opts) {
+	case actionVersion:
+		fmt.Println(version())
+		return
+	case actionCheckDeps:
 		results := deploy.CheckDependencies()
 		deploy.PrintResults(os.Stdout, results)
 		if !deploy.AllPassed(results) {
 			os.Exit(1)
 		}
 		return
-	}
-
-	if *deploySystemd {
-		err := deploy.InstallService(os.Stdout, deploy.ServiceConfig{
-			ServiceName: *serviceName,
-			ServiceUser: *serviceUser,
-			Port:        *port,
-			Interval:    *scrapeInterval,
-			ConfigPath:  *configPath,
+	case actionDeployWindows:
+		err := deploy.InstallWindowsService(os.Stdout, deploy.ServiceConfig{
+			ServiceName: opts.serviceName,
+			ServiceUser: opts.serviceUser,
+			Port:        opts.port,
+			Interval:    opts.scrapeInterval,
+			ConfigPath:  opts.configPath,
 		})
 		if err != nil {
 			log.Fatalf("deploy failed: %v", err)
 		}
 		return
-	}
-
-	if *uninstall {
-		err := deploy.UninstallService(os.Stdout, deploy.ServiceConfig{
-			ServiceName: *serviceName,
+	case actionDeploySystemd:
+		err := deploy.InstallService(os.Stdout, deploy.ServiceConfig{
+			ServiceName: opts.serviceName,
+			ServiceUser: opts.serviceUser,
+			Port:        opts.port,
+			Interval:    opts.scrapeInterval,
+			ConfigPath:  opts.configPath,
+		})
+		if err != nil {
+			log.Fatalf("deploy failed: %v", err)
+		}
+		return
+	case actionUninstallWindows:
+		err := deploy.UninstallWindowsService(os.Stdout, deploy.ServiceConfig{
+			ServiceName: opts.serviceName,
 		})
 		if err != nil {
 			log.Fatalf("uninstall failed: %v", err)
 		}
 		return
-	}
-
-	if *update {
+	case actionUninstallSystemd:
+		err := deploy.UninstallService(os.Stdout, deploy.ServiceConfig{
+			ServiceName: opts.serviceName,
+		})
+		if err != nil {
+			log.Fatalf("uninstall failed: %v", err)
+		}
+		return
+	case actionUpdate:
 		err := deploy.UpdateService(os.Stdout, deploy.ServiceConfig{
-			ServiceName: *serviceName,
+			ServiceName: opts.serviceName,
 		})
 		if err != nil {
 			log.Fatalf("update failed: %v", err)
 		}
 		return
+	case actionRun:
+		// continue to server startup below
 	}
 
+	if deploy.IsWindowsService() {
+		err := deploy.RunWindowsService(opts.serviceName, func(ctx context.Context) error {
+			return run(ctx, opts)
+		})
+		if err != nil {
+			log.Fatalf("service execution failed: %v", err)
+		}
+		return
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	if err := run(ctx, opts); err != nil {
+		log.Fatalf("Error starting HTTP server: %v", err)
+	}
+}
+
+func run(ctx context.Context, opts *cliOptions) error {
 	store := exporter.NewHistoryStore()
 
 	inCluster := exporter.InCluster()
 
 	// Start background scraping thread
-	go startScraper(store, *scrapeInterval, inCluster)
+	go startScraper(ctx, store, opts.scrapeInterval, inCluster)
 
 	// Load optional config for extra environ redaction rules and label-size
 	// overrides (fail-fast: a rejected override must not start silently).
 	var cfg *exporter.Config
 	var redactKeySubstrings []string
-	if *configPath != "" {
-		loaded, err := exporter.LoadConfig(*configPath)
+	if opts.configPath != "" {
+		loaded, err := exporter.LoadConfig(opts.configPath)
 		if err != nil {
-			log.Fatalf("config: %v", err)
+			return fmt.Errorf("config: %w", err)
 		}
 		cfg = loaded
 		redactKeySubstrings = cfg.RedactKeySubstrings
@@ -126,36 +248,56 @@ func main() {
 	// When running inside Kubernetes, also export per-job pod resource requests.
 	if inCluster {
 		kubeStore := exporter.NewKubeStore()
-		client, err := exporter.NewKubeletClient(*kubeletInsecure)
+		client, err := exporter.NewKubeletClient(opts.kubeletInsecure)
 		if err != nil {
 			log.Printf("kube: disabled (kubelet client init failed: %v)", err)
 		} else {
-			go startKubeScraper(kubeStore, client, *scrapeInterval)
+			go startKubeScraper(ctx, kubeStore, client, opts.scrapeInterval)
 			prometheus.MustRegister(exporter.NewKubeCollectorWithConfig(store, kubeStore, cfg, collector))
-			log.Printf("kube: enabled, polling kubelet at %s", client.BaseURL())
+			log.Printf("kube: enabled, polling kubelet at %s", client.BaseURL()) //nolint:gosec // G706: BaseURL is a fixed in-cluster address
 		}
 	}
 
 	// Configure HTTP Routes
-	http.HandleFunc("/", serveDashboard)
-	http.Handle("/metrics", promhttp.Handler())
-	http.HandleFunc("/api/processes", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", serveDashboard)
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/api/processes", func(w http.ResponseWriter, r *http.Request) {
 		serveAPIProcesses(w, r, store, redactKeySubstrings)
 	})
-	http.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
 		serveAPIHistory(w, r, store, redactKeySubstrings)
 	})
 
-	log.Printf("Starting GitLab Process History Exporter %s on :%d", version(), *port)
-	log.Printf("Embedded web dashboard available at http://localhost:%d/", *port)
-	log.Printf("Prometheus metrics endpoint available at http://localhost:%d/metrics", *port)
+	log.Printf("Starting GitLab Process History Exporter %s on :%d", version(), opts.port)        //nolint:gosec // G706: port is an operator-supplied flag
+	log.Printf("Embedded web dashboard available at http://localhost:%d/", opts.port)             //nolint:gosec // G706: port is an operator-supplied flag
+	log.Printf("Prometheus metrics endpoint available at http://localhost:%d/metrics", opts.port) //nolint:gosec // G706: port is an operator-supplied flag
 
 	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", *port),
+		Addr:              fmt.Sprintf(":%d", opts.port),
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("Error starting HTTP server: %v", err)
+
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+		close(serverErr)
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = srv.Shutdown(shutdownCtx)
+		return nil
+	case err := <-serverErr:
+		if err != nil {
+			return fmt.Errorf("HTTP server error: %w", err)
+		}
+		return nil
 	}
 }
 
@@ -224,7 +366,7 @@ func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.His
 }
 
 // Background scraper with process object reuse for CPU calculation accuracy
-func startScraper(store *exporter.HistoryStore, interval time.Duration, inCluster bool) {
+func startScraper(ctx context.Context, store *exporter.HistoryStore, interval time.Duration, inCluster bool) {
 	procCache := make(map[int32]*process.Process)
 
 	ticker := time.NewTicker(interval)
@@ -232,13 +374,18 @@ func startScraper(store *exporter.HistoryStore, interval time.Duration, inCluste
 
 	scrape(store, procCache, inCluster)
 
-	for range ticker.C {
-		scrape(store, procCache, inCluster)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			scrape(store, procCache, inCluster)
+		}
 	}
 }
 
 // startKubeScraper polls the kubelet for node-local pod resource requests.
-func startKubeScraper(kubeStore *exporter.KubeStore, client *exporter.KubeletClient, interval time.Duration) {
+func startKubeScraper(ctx context.Context, kubeStore *exporter.KubeStore, client *exporter.KubeletClient, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -252,8 +399,13 @@ func startKubeScraper(kubeStore *exporter.KubeStore, client *exporter.KubeletCli
 	}
 
 	update()
-	for range ticker.C {
-		update()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			update()
+		}
 	}
 }
 

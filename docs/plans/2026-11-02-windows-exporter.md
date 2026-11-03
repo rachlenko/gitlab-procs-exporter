@@ -79,13 +79,13 @@ Extend `gitlab-procs-exporter` to fully support Microsoft Windows as a first-cla
 - Modify: `main.go`
 - Modify: `main_test.go`
 
-- [ ] 1. In `main.go`, add flags `--deploy-as-windows-service` (or support `--deploy-as-service` on both OSes) and adjust `--service-user` default on Windows to `LocalSystem` (or `NT AUTHORITY\SYSTEM`).
-- [ ] 2. Update service deployment and uninstall dispatch: on Windows, `--deploy-as-windows-service` or `--deploy-as-systemd-service` calls `deploy.InstallWindowsService`, and `--uninstall` calls `deploy.UninstallWindowsService`.
-- [ ] 3. In `main.go`, check `deploy.IsWindowsService()` before starting HTTP server:
+- [x] 1. In `main.go`, add flags `--deploy-as-windows-service` (or support `--deploy-as-service` on both OSes) and adjust `--service-user` default on Windows to `LocalSystem` (or `NT AUTHORITY\SYSTEM`).
+- [x] 2. Update service deployment and uninstall dispatch: on Windows, `--deploy-as-windows-service` or `--deploy-as-systemd-service` calls `deploy.InstallWindowsService`, and `--uninstall` calls `deploy.UninstallWindowsService`.
+- [x] 3. In `main.go`, check `deploy.IsWindowsService()` before starting HTTP server:
   - If running as a Windows service: wrap HTTP server and scraper startup inside `deploy.RunWindowsService(*serviceName, ...)`, shutting down the HTTP server cleanly when SCM signals stop.
   - If running in console mode (interactive): continue running standard HTTP server with logger output.
-- [ ] 4. Update tests in `main_test.go` to test flag parsing and behavior for Windows service flags.
-- [ ] 5. Run tests: verify `go test ./...` passes on Linux and `GOOS=windows go build -o .bin/gitlab-procs-exporter.exe .` builds.
+- [x] 4. Update tests in `main_test.go` to test flag parsing and behavior for Windows service flags.
+- [x] 5. Run tests: verify `go test ./...` passes on Linux and `GOOS=windows go build -o .bin/gitlab-procs-exporter.exe .` builds.
 
 ### Task 5: Windows cross-compilation and packaging in .goreleaser.yml and Makefile
 

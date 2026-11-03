@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -219,8 +220,11 @@ func TestLiveProcessEvictsExitedPID(t *testing.T) {
 func TestStartScraper(t *testing.T) {
 	store := exporter.NewHistoryStore()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Run background scraper with short interval
-	go startScraper(store, 10*time.Millisecond, false)
+	go startScraper(ctx, store, 10*time.Millisecond, false)
 
 	// Wait briefly for at least a few scraper cycles
 	time.Sleep(30 * time.Millisecond)
@@ -279,5 +283,171 @@ func TestLiveProcessReusesCachedObject(t *testing.T) {
 	}
 	if len(cache) != 1 {
 		t.Errorf("expected exactly 1 cache entry, got %d", len(cache))
+	}
+}
+
+func TestParseFlagsDefaults(t *testing.T) {
+	fsLinux := flag.NewFlagSet("test-linux", flag.ContinueOnError)
+	optsLinux, err := parseFlags(fsLinux, []string{}, "linux")
+	if err != nil {
+		t.Fatalf("unexpected error parsing flags on linux: %v", err)
+	}
+	if optsLinux.serviceUser != "root" {
+		t.Errorf("expected default service-user 'root' on linux, got %q", optsLinux.serviceUser)
+	}
+	if optsLinux.port != 8000 {
+		t.Errorf("expected default port 8000, got %d", optsLinux.port)
+	}
+	if optsLinux.serviceName != "gitlab-procs-exporter" {
+		t.Errorf("expected default serviceName 'gitlab-procs-exporter', got %q", optsLinux.serviceName)
+	}
+	if optsLinux.deployWindows || optsLinux.deploySystemd || optsLinux.deployService || optsLinux.uninstall {
+		t.Errorf("expected deploy/uninstall flags to default to false")
+	}
+
+	fsWin := flag.NewFlagSet("test-windows", flag.ContinueOnError)
+	optsWin, err := parseFlags(fsWin, []string{}, "windows")
+	if err != nil {
+		t.Fatalf("unexpected error parsing flags on windows: %v", err)
+	}
+	if optsWin.serviceUser != "LocalSystem" {
+		t.Errorf("expected default service-user 'LocalSystem' on windows, got %q", optsWin.serviceUser)
+	}
+}
+
+func TestParseFlagsCustom(t *testing.T) {
+	args := []string{
+		"--port=9100",
+		"--interval=30s",
+		"--service-name=custom-exporter",
+		"--service-user=NT AUTHORITY\\SYSTEM",
+		"--config=/path/to/config.yaml",
+		"--deploy-as-windows-service",
+		"--deploy-as-service",
+	}
+
+	fs := flag.NewFlagSet("test-custom", flag.ContinueOnError)
+	opts, err := parseFlags(fs, args, "windows")
+	if err != nil {
+		t.Fatalf("unexpected error parsing flags: %v", err)
+	}
+
+	if opts.port != 9100 {
+		t.Errorf("expected port 9100, got %d", opts.port)
+	}
+	if opts.scrapeInterval != 30*time.Second {
+		t.Errorf("expected interval 30s, got %v", opts.scrapeInterval)
+	}
+	if opts.serviceName != "custom-exporter" {
+		t.Errorf("expected serviceName 'custom-exporter', got %q", opts.serviceName)
+	}
+	if opts.serviceUser != "NT AUTHORITY\\SYSTEM" {
+		t.Errorf("expected serviceUser 'NT AUTHORITY\\SYSTEM', got %q", opts.serviceUser)
+	}
+	if opts.configPath != "/path/to/config.yaml" {
+		t.Errorf("expected configPath '/path/to/config.yaml', got %q", opts.configPath)
+	}
+	if !opts.deployWindows {
+		t.Errorf("expected deployWindows to be true")
+	}
+	if !opts.deployService {
+		t.Errorf("expected deployService to be true")
+	}
+}
+
+func TestResolveAction(t *testing.T) {
+	tests := []struct {
+		name     string
+		goos     string
+		opts     cliOptions
+		expected actionType
+	}{
+		{
+			name:     "no flags on linux runs exporter",
+			goos:     "linux",
+			opts:     cliOptions{},
+			expected: actionRun,
+		},
+		{
+			name:     "no flags on windows runs exporter",
+			goos:     "windows",
+			opts:     cliOptions{},
+			expected: actionRun,
+		},
+		{
+			name:     "version flag takes precedence",
+			goos:     "linux",
+			opts:     cliOptions{showVersion: true, deploySystemd: true},
+			expected: actionVersion,
+		},
+		{
+			name:     "check deps flag",
+			goos:     "linux",
+			opts:     cliOptions{checkDeps: true},
+			expected: actionCheckDeps,
+		},
+		{
+			name:     "deploy windows flag on windows",
+			goos:     "windows",
+			opts:     cliOptions{deployWindows: true},
+			expected: actionDeployWindows,
+		},
+		{
+			name:     "deploy systemd flag on windows routes to windows service",
+			goos:     "windows",
+			opts:     cliOptions{deploySystemd: true},
+			expected: actionDeployWindows,
+		},
+		{
+			name:     "deploy service generic flag on windows routes to windows service",
+			goos:     "windows",
+			opts:     cliOptions{deployService: true},
+			expected: actionDeployWindows,
+		},
+		{
+			name:     "uninstall on windows routes to windows service uninstall",
+			goos:     "windows",
+			opts:     cliOptions{uninstall: true},
+			expected: actionUninstallWindows,
+		},
+		{
+			name:     "deploy systemd flag on linux routes to systemd",
+			goos:     "linux",
+			opts:     cliOptions{deploySystemd: true},
+			expected: actionDeploySystemd,
+		},
+		{
+			name:     "deploy service generic flag on linux routes to systemd",
+			goos:     "linux",
+			opts:     cliOptions{deployService: true},
+			expected: actionDeploySystemd,
+		},
+		{
+			name:     "deploy windows flag on linux targets windows install (which errors cleanly)",
+			goos:     "linux",
+			opts:     cliOptions{deployWindows: true},
+			expected: actionDeployWindows,
+		},
+		{
+			name:     "uninstall on linux routes to systemd uninstall",
+			goos:     "linux",
+			opts:     cliOptions{uninstall: true},
+			expected: actionUninstallSystemd,
+		},
+		{
+			name:     "update flag",
+			goos:     "linux",
+			opts:     cliOptions{update: true},
+			expected: actionUpdate,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveAction(tc.goos, &tc.opts)
+			if got != tc.expected {
+				t.Errorf("resolveAction(%q, %+v) = %v; want %v", tc.goos, tc.opts, got, tc.expected)
+			}
+		})
 	}
 }
