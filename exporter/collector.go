@@ -1,10 +1,11 @@
 package exporter
 
 import (
-	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -83,6 +84,33 @@ type ProcessCollector struct {
 	// Describe/Collect below rather than registered separately, so it rides on
 	// whatever registry the collector itself is registered on.
 	truncations *prometheus.CounterVec
+
+	labelMu             sync.Mutex
+	cachedProcessLabels map[string]*cachedProcessLabels
+	activeKeys          map[string]struct{}
+}
+
+// cachedProcessLabels holds precomputed Prometheus label slices and sanitized/scrubbed
+// process metadata for an active process.
+type cachedProcessLabels struct {
+	ciVals           []string
+	name             string
+	cmdline          string
+	environ          string
+	environTruncated bool
+	labels           []string
+	infoLabels       []string
+	truncatedLabels  []string
+}
+
+type labelTruncationRecorder struct {
+	pc        *ProcessCollector
+	truncated []string
+}
+
+func (r *labelTruncationRecorder) observeTruncation(label string) {
+	r.truncated = append(r.truncated, label)
+	r.pc.observeTruncation(label)
 }
 
 // syscallHelp explains, once, that these counters are syscalls and not IOPS.
@@ -135,10 +163,12 @@ func NewProcessCollector(store *HistoryStore, extraKeySubstrings ...string) *Pro
 	}
 
 	return &ProcessCollector{
-		store:              store,
-		extraKeySubstrings: normalizeSubstrings(extraKeySubstrings),
-		maxLabelBytes:      mergedMaxLabelBytes(nil),
-		truncations:        truncations,
+		store:               store,
+		extraKeySubstrings:  normalizeSubstrings(extraKeySubstrings),
+		maxLabelBytes:       mergedMaxLabelBytes(nil),
+		truncations:         truncations,
+		cachedProcessLabels: make(map[string]*cachedProcessLabels),
+		activeKeys:          make(map[string]struct{}),
 		cpuDesc: prometheus.NewDesc(
 			"gitlab_process_cpu_seconds_total",
 			"Total user and system CPU time spent in seconds.",
@@ -264,7 +294,7 @@ func isSensitivePair(key, val string, extraKeySubstrings []string) bool {
 func RedactEnviron(environ map[string]string, extraKeySubstrings []string) map[string]string {
 	out := make(map[string]string, len(environ))
 	for k, v := range environ {
-		if isSensitivePair(k, v, extraKeySubstrings) {
+		if v != "[REDACTED]" && isSensitivePair(k, v, extraKeySubstrings) {
 			v = "[REDACTED]"
 		}
 		out[k] = v
@@ -330,6 +360,12 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 	}
 
 	var b strings.Builder
+	estLen := len(keys) * 32
+	if estLen > maxEnvironBytes {
+		estLen = maxEnvironBytes
+	}
+	b.Grow(estLen)
+
 	for _, k := range keys {
 		val := sanitizeLabelValue(environ[k])
 		switch {
@@ -343,7 +379,8 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 		case len(val) > maxEnvironValueLen:
 			val = environTruncMarker(val)
 		}
-		pair := fmt.Sprintf("%s=%s", sanitizeLabelValue(k), val)
+		kSanitized := sanitizeLabelValue(k)
+		pairLen := len(kSanitized) + 1 + len(val)
 
 		sep := 0
 		if b.Len() > 0 {
@@ -360,14 +397,16 @@ func (pc *ProcessCollector) scrubEnviron(environ map[string]string) (string, boo
 		// debugged. Keys are sorted, so which variables that costs is arbitrary.
 		// Continuing keeps every pair that still fits; truncated already says the
 		// list is incomplete, which is equally true either way.
-		if b.Len()+sep+len(pair) > maxEnvironBytes {
+		if b.Len()+sep+pairLen > maxEnvironBytes {
 			truncated = true
 			continue
 		}
 		if sep > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(pair)
+		b.WriteString(kSanitized)
+		b.WriteByte('=')
+		b.WriteString(val)
 	}
 	return b.String(), truncated
 }
@@ -393,35 +432,82 @@ func (pc *ProcessCollector) Describe(ch chan<- *prometheus.Desc) {
 func (pc *ProcessCollector) Collect(ch chan<- prometheus.Metric) {
 	processes := pc.store.GetActiveProcesses()
 
+	pc.labelMu.Lock()
+	if pc.cachedProcessLabels == nil {
+		pc.cachedProcessLabels = make(map[string]*cachedProcessLabels)
+	}
+	if pc.activeKeys == nil {
+		pc.activeKeys = make(map[string]struct{}, len(processes))
+	} else {
+		clear(pc.activeKeys)
+	}
+
 	for _, p := range processes {
-		pidStr := fmt.Sprintf("%d", p.PID)
-		name := pc.boundLabel("name", sanitizeLabelValue(p.Name))
-		ciVals := ciJobLabelValuesWith(pc.maxLabelBytes, p.Environ, pc)
-		labels := append([]string{pidStr, name}, ciVals...)
+		key := formatProcessKey(p.PID, p.CreateTime)
+		pc.activeKeys[key] = struct{}{}
+
+		cached, ok := pc.cachedProcessLabels[key]
+		if !ok {
+			recorder := &labelTruncationRecorder{pc: pc}
+			pidStr := strconv.Itoa(int(p.PID))
+			name := boundLabelWith(pc.maxLabelBytes, "name", sanitizeLabelValue(p.Name), recorder)
+			ciVals := ciJobLabelValuesWith(pc.maxLabelBytes, p.Environ, recorder)
+			labels := append([]string{pidStr, name}, ciVals...)
+
+			environ, environTruncated := pc.scrubEnviron(p.Environ)
+			truncatedLabel := "0"
+			if environTruncated {
+				truncatedLabel = "1"
+			}
+			cmdline := boundLabelWith(pc.maxLabelBytes, "cmdline", sanitizeLabelValue(p.CmdLine), recorder)
+			infoLabels := append([]string{pidStr, name, cmdline, environ, truncatedLabel}, ciVals...)
+
+			cached = &cachedProcessLabels{
+				ciVals:           ciVals,
+				name:             name,
+				cmdline:          cmdline,
+				environ:          environ,
+				environTruncated: environTruncated,
+				labels:           labels,
+				infoLabels:       infoLabels,
+				truncatedLabels:  recorder.truncated,
+			}
+			pc.cachedProcessLabels[key] = cached
+		} else {
+			for _, lbl := range cached.truncatedLabels {
+				pc.observeTruncation(lbl)
+			}
+		}
 
 		// Emit core stats
-		ch <- prometheus.MustNewConstMetric(pc.cpuDesc, prometheus.CounterValue, p.CPUSeconds, labels...)
-		ch <- prometheus.MustNewConstMetric(pc.rssDesc, prometheus.GaugeValue, float64(p.MemoryRSS), labels...)
-		ch <- prometheus.MustNewConstMetric(pc.vmsDesc, prometheus.GaugeValue, float64(p.MemoryVMS), labels...)
-		ch <- prometheus.MustNewConstMetric(pc.ioReadDesc, prometheus.CounterValue, float64(p.IORead), labels...)
-		ch <- prometheus.MustNewConstMetric(pc.ioWriteDesc, prometheus.CounterValue, float64(p.IOWrite), labels...)
-		ch <- prometheus.MustNewConstMetric(pc.ioReadSelfDesc, prometheus.CounterValue, float64(p.IOReadSelf), labels...)
-		ch <- prometheus.MustNewConstMetric(pc.ioWriteSelfDesc, prometheus.CounterValue, float64(p.IOWriteSelf), labels...)
-		ch <- prometheus.MustNewConstMetric(pc.ioReadSyscallsDesc, prometheus.CounterValue, float64(p.IOReadSyscalls), labels...)
-		ch <- prometheus.MustNewConstMetric(pc.ioWriteSyscallsDesc, prometheus.CounterValue, float64(p.IOWriteSyscalls), labels...)
-		ch <- prometheus.MustNewConstMetric(pc.ioReadSyscallsSelfDesc, prometheus.CounterValue, float64(p.IOReadSyscallsSelf), labels...)
-		ch <- prometheus.MustNewConstMetric(pc.ioWriteSyscallsSelfDesc, prometheus.CounterValue, float64(p.IOWriteSyscallsSelf), labels...)
+		ch <- prometheus.MustNewConstMetric(pc.cpuDesc, prometheus.CounterValue, p.CPUSeconds, cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.rssDesc, prometheus.GaugeValue, float64(p.MemoryRSS), cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.vmsDesc, prometheus.GaugeValue, float64(p.MemoryVMS), cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioReadDesc, prometheus.CounterValue, float64(p.IORead), cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioWriteDesc, prometheus.CounterValue, float64(p.IOWrite), cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioReadSelfDesc, prometheus.CounterValue, float64(p.IOReadSelf), cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioWriteSelfDesc, prometheus.CounterValue, float64(p.IOWriteSelf), cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioReadSyscallsDesc, prometheus.CounterValue, float64(p.IOReadSyscalls), cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioWriteSyscallsDesc, prometheus.CounterValue, float64(p.IOWriteSyscalls), cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioReadSyscallsSelfDesc, prometheus.CounterValue, float64(p.IOReadSyscallsSelf), cached.labels...)
+		ch <- prometheus.MustNewConstMetric(pc.ioWriteSyscallsSelfDesc, prometheus.CounterValue, float64(p.IOWriteSyscallsSelf), cached.labels...)
 
 		// Emit metadata info metric (environ scrubbed for secrets and bounded)
-		environ, environTruncated := pc.scrubEnviron(p.Environ)
-		truncatedLabel := "0"
-		if environTruncated {
-			truncatedLabel = "1"
-		}
-		cmdline := pc.boundLabel("cmdline", sanitizeLabelValue(p.CmdLine))
-		infoLabels := append([]string{pidStr, name, cmdline, environ, truncatedLabel}, ciVals...)
-		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, infoLabels...)
+		ch <- prometheus.MustNewConstMetric(pc.infoDesc, prometheus.GaugeValue, 1.0, cached.infoLabels...)
 	}
+
+	deleted := 0
+	initialCount := len(pc.cachedProcessLabels)
+	for key := range pc.cachedProcessLabels {
+		if _, ok := pc.activeKeys[key]; !ok {
+			delete(pc.cachedProcessLabels, key)
+			deleted++
+		}
+	}
+	if deleted > 0 && len(pc.cachedProcessLabels)*2 < initialCount {
+		pc.cachedProcessLabels = compactMap(pc.cachedProcessLabels)
+	}
+	pc.labelMu.Unlock()
 
 	// Emitted last so this collector's own cuts this scrape are already counted.
 	// KubeCollector shares this counter but gathers independently, so an
@@ -486,6 +572,30 @@ func isTokenCharset(v string) bool {
 }
 
 func shannonEntropy(v string) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	var freq [128]int
+	for i := 0; i < len(v); i++ {
+		b := v[i]
+		if b < 128 {
+			freq[b]++
+		} else {
+			return shannonEntropyFallback(v)
+		}
+	}
+	n := float64(len(v))
+	var h float64
+	for _, c := range freq {
+		if c > 0 {
+			p := float64(c) / n
+			h -= p * math.Log2(p)
+		}
+	}
+	return h
+}
+
+func shannonEntropyFallback(v string) float64 {
 	counts := make(map[rune]float64)
 	for _, r := range v {
 		counts[r]++

@@ -1,11 +1,28 @@
 package exporter
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+// formatProcessKey formats "<pid>-<createtime>" using a stack buffer to avoid heap allocations.
+func formatProcessKey(pid int32, createTime int64) string {
+	var buf [32]byte
+	b := strconv.AppendInt(buf[:0], int64(pid), 10)
+	b = append(b, '-')
+	b = strconv.AppendInt(b, createTime, 10)
+	return string(b)
+}
+
+func compactMap[M ~map[K]V, K comparable, V any](m M) M {
+	compacted := make(M, len(m))
+	for k, v := range m {
+		compacted[k] = v
+	}
+	return compacted
+}
 
 // ProcessSample represents the state of a process at a specific point in time.
 type ProcessSample struct {
@@ -57,9 +74,24 @@ func (hs *HistoryStore) AddSample(sample ProcessSample) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
-	key := fmt.Sprintf("%d-%d", sample.PID, sample.CreateTime)
+	var key string
+	if existingKey, ok := hs.activeKeys[sample.PID]; ok {
+		if samples := hs.processes[existingKey]; len(samples) > 0 && samples[len(samples)-1].CreateTime == sample.CreateTime {
+			key = existingKey
+		}
+	}
+	if key == "" {
+		key = formatProcessKey(sample.PID, sample.CreateTime)
+		hs.activeKeys[sample.PID] = key
+	}
+
 	hs.processes[key] = append(hs.processes[key], sample)
-	hs.activeKeys[sample.PID] = key
+
+	samples := hs.processes[key]
+	cutoff := time.Now().Add(-10 * time.Minute)
+	if !samples[0].Timestamp.Before(cutoff) {
+		return
+	}
 
 	hs.pruneExpiredSamples(key)
 }
@@ -69,6 +101,8 @@ func (hs *HistoryStore) MarkInactive(activePids map[int32]bool) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
+	deletedPids := 0
+	initialActiveCount := len(hs.activeKeys)
 	for pid, key := range hs.activeKeys {
 		if !activePids[pid] {
 			// Process exited, mark as inactive in its latest sample
@@ -77,7 +111,11 @@ func (hs *HistoryStore) MarkInactive(activePids map[int32]bool) {
 				samples[len(samples)-1].IsActive = false
 			}
 			delete(hs.activeKeys, pid)
+			deletedPids++
 		}
+	}
+	if deletedPids > 0 && len(hs.activeKeys)*2 < initialActiveCount {
+		hs.activeKeys = compactMap(hs.activeKeys)
 	}
 
 	// Also prune all historical records older than 10 minutes globally
@@ -89,7 +127,7 @@ func (hs *HistoryStore) GetActiveProcesses() []ProcessSample {
 	hs.mu.RLock()
 	defer hs.mu.RUnlock()
 
-	var active []ProcessSample
+	active := make([]ProcessSample, 0, len(hs.activeKeys))
 	for _, key := range hs.activeKeys {
 		samples := hs.processes[key]
 		if len(samples) > 0 {
@@ -113,7 +151,7 @@ func (hs *HistoryStore) QueryHistory(queryType string, value string) map[string]
 		latest := samples[len(samples)-1]
 
 		match := false
-		if queryType == "pid" && fmt.Sprintf("%d", latest.PID) == value {
+		if queryType == "pid" && strconv.Itoa(int(latest.PID)) == value {
 			match = true
 		} else if queryType == "name" && stringsContainsIgnoreCase(latest.Name, value) {
 			match = true
@@ -138,39 +176,55 @@ func stringsContainsIgnoreCase(s, substr string) bool {
 
 // Internal pruning for a single process key
 func (hs *HistoryStore) pruneExpiredSamples(key string) {
-	samples := hs.processes[key]
-	cutoff := time.Now().Add(-10 * time.Minute)
-
-	var valid []ProcessSample
-	for _, s := range samples {
-		if s.Timestamp.After(cutoff) {
-			valid = append(valid, s)
-		}
-	}
-
-	if len(valid) == 0 {
-		delete(hs.processes, key)
-	} else {
-		hs.processes[key] = valid
-	}
+	hs.pruneKey(key, time.Now().Add(-10*time.Minute))
 }
 
 // Internal global pruning
 func (hs *HistoryStore) pruneAll() {
 	cutoff := time.Now().Add(-10 * time.Minute)
-
-	for key, samples := range hs.processes {
-		var valid []ProcessSample
-		for _, s := range samples {
-			if s.Timestamp.After(cutoff) {
-				valid = append(valid, s)
-			}
-		}
-
-		if len(valid) == 0 {
-			delete(hs.processes, key)
-		} else {
-			hs.processes[key] = valid
+	deletedKeys := 0
+	initialCount := len(hs.processes)
+	for key := range hs.processes {
+		if hs.pruneKey(key, cutoff) {
+			deletedKeys++
 		}
 	}
+	if deletedKeys > 0 && len(hs.processes)*2 < initialCount {
+		hs.processes = compactMap(hs.processes)
+	}
+}
+
+// pruneKey prunes expired samples for key in-place using cutoff.
+// Returns true if the key was deleted from hs.processes.
+func (hs *HistoryStore) pruneKey(key string, cutoff time.Time) bool {
+	samples := hs.processes[key]
+	if len(samples) == 0 {
+		delete(hs.processes, key)
+		return true
+	}
+
+	if !samples[0].Timestamp.Before(cutoff) {
+		return false
+	}
+
+	k := 0
+	for k < len(samples) && samples[k].Timestamp.Before(cutoff) {
+		k++
+	}
+
+	if k == len(samples) {
+		for i := range samples {
+			samples[i] = ProcessSample{}
+		}
+		delete(hs.processes, key)
+		return true
+	}
+
+	copy(samples, samples[k:])
+	tail := samples[len(samples)-k:]
+	for i := range tail {
+		tail[i] = ProcessSample{}
+	}
+	hs.processes[key] = samples[:len(samples)-k]
+	return false
 }

@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +206,68 @@ func TestIsSecretValue(t *testing.T) {
 	for _, v := range plainVals {
 		if IsSecretValue(v) {
 			t.Errorf("expected value %q to pass through", v)
+		}
+	}
+}
+
+func referenceShannonEntropy(v string) float64 {
+	counts := make(map[rune]float64)
+	for _, r := range v {
+		counts[r]++
+	}
+	n := float64(len(v))
+	var h float64
+	for _, c := range counts {
+		p := c / n
+		h -= p * math.Log2(p)
+	}
+	return h
+}
+
+func TestShannonEntropy(t *testing.T) {
+	testCases := []string{
+		"",
+		"a",
+		"aaaa",
+		"abcdefgh",
+		"0123456789abcdef",
+		"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+		"dGVzdGluZ19zaGFubm9uX2VudHJvcHlfMTIzNDU2",
+		"glpat-abcdefghij1234567890",
+		"token_sample_test_entropy_1234567890abcdef",
+		"mix+of/tokens=and-chars_12345",
+		"unicode_token_test_мир_日本語",
+	}
+
+	for _, tc := range testCases {
+		expected := referenceShannonEntropy(tc)
+		actual := shannonEntropy(tc)
+		if math.Abs(expected-actual) > 1e-9 {
+			t.Errorf("shannonEntropy(%q) = %v; want %v", tc, actual, expected)
+		}
+	}
+
+	// Verify zero heap allocations for ASCII inputs
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = shannonEntropy("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0")
+	})
+	if allocs != 0 {
+		t.Errorf("expected 0 allocs for shannonEntropy, got %v", allocs)
+	}
+}
+
+func BenchmarkShannonEntropy(b *testing.B) {
+	tokens := []string{
+		"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+		"dGVzdGluZ19zaGFubm9uX2VudHJvcHlfMTIzNDU2",
+		"token_sample_test_entropy_1234567890abcdef",
+		"plain_env_value_without_high_entropy_12345",
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, tok := range tokens {
+			_ = shannonEntropy(tok)
 		}
 	}
 }
@@ -1137,6 +1200,339 @@ func TestCollectSeparatesReapedIOFromSelfIO(t *testing.T) {
 			t.Errorf("%s not exported", name)
 		} else if v != wantVal {
 			t.Errorf("%s = %v, want %v", name, v, wantVal)
+		}
+	}
+}
+
+type collectedMetric struct {
+	desc   string
+	labels map[string]string
+	val    float64
+}
+
+func readCollectedMetric(t *testing.T, m prometheus.Metric) collectedMetric {
+	t.Helper()
+	var dtoMetric dto.Metric
+	if err := m.Write(&dtoMetric); err != nil {
+		t.Fatalf("failed to write metric: %v", err)
+	}
+	labels := make(map[string]string, len(dtoMetric.Label))
+	for _, l := range dtoMetric.Label {
+		labels[l.GetName()] = l.GetValue()
+	}
+	var val float64
+	if dtoMetric.Counter != nil {
+		val = dtoMetric.GetCounter().GetValue()
+	} else if dtoMetric.Gauge != nil {
+		val = dtoMetric.GetGauge().GetValue()
+	}
+	return collectedMetric{
+		desc:   m.Desc().String(),
+		labels: labels,
+		val:    val,
+	}
+}
+
+func TestCollectCachedProcessLabelsIdenticalAcrossScrapes(t *testing.T) {
+	store := NewHistoryStore()
+	sample := ProcessSample{
+		Timestamp: time.Now(),
+		PID:       5678,
+		Name:      "puma-worker",
+		CmdLine:   "puma -w 4 -b tcp://127.0.0.1:8080",
+		Environ: map[string]string{
+			"CI_JOB_ID":       "12345",
+			"CI_JOB_NAME":     "rubocop",
+			"CI_PROJECT_PATH": "gitlab-org/gitlab",
+			"CI_PIPELINE_ID":  "67890",
+			"DB_PASSWORD":     "secret123", //nolint:gosec // G101: fake secret to test redaction
+			"RAILS_ENV":       "production",
+		},
+		CPUSeconds:          55.5,
+		MemoryRSS:           500 * 1024 * 1024,
+		MemoryVMS:           1000 * 1024 * 1024,
+		IORead:              2048,
+		IOWrite:             4096,
+		IOReadSelf:          2048,
+		IOWriteSelf:         4096,
+		IOReadSyscalls:      30,
+		IOWriteSyscalls:     20,
+		IOReadSyscallsSelf:  30,
+		IOWriteSyscallsSelf: 20,
+		CreateTime:          300,
+		IsActive:            true,
+	}
+	store.AddSample(sample)
+	collector := NewProcessCollector(store)
+
+	// Scrape 1 (Cold cache)
+	ch1 := make(chan prometheus.Metric, 64)
+	collector.Collect(ch1)
+	close(ch1)
+
+	metrics1 := make([]collectedMetric, 0)
+	for m := range ch1 {
+		if strings.Contains(m.Desc().String(), "gitlab_exporter_label_truncations_total") {
+			continue
+		}
+		metrics1 = append(metrics1, readCollectedMetric(t, m))
+	}
+
+	key := fmt.Sprintf("%d-%d", sample.PID, sample.CreateTime)
+	collector.labelMu.Lock()
+	cached, ok := collector.cachedProcessLabels[key]
+	collector.labelMu.Unlock()
+	if !ok || cached == nil {
+		t.Fatalf("expected cache entry for %s after first scrape", key)
+	}
+	if cached.name != "puma-worker" {
+		t.Errorf("cached name = %q, want puma-worker", cached.name)
+	}
+	if !strings.Contains(cached.environ, "DB_PASSWORD=[REDACTED]") {
+		t.Errorf("cached environ did not redact DB_PASSWORD: %q", cached.environ)
+	}
+	if !strings.Contains(cached.environ, "RAILS_ENV=production") {
+		t.Errorf("cached environ missing RAILS_ENV: %q", cached.environ)
+	}
+	if cached.environTruncated {
+		t.Error("expected environTruncated = false")
+	}
+
+	// Scrape 2 (Warm cache hit)
+	ch2 := make(chan prometheus.Metric, 64)
+	collector.Collect(ch2)
+	close(ch2)
+
+	metrics2 := make([]collectedMetric, 0)
+	for m := range ch2 {
+		if strings.Contains(m.Desc().String(), "gitlab_exporter_label_truncations_total") {
+			continue
+		}
+		metrics2 = append(metrics2, readCollectedMetric(t, m))
+	}
+
+	if len(metrics1) != len(metrics2) {
+		t.Fatalf("metric count mismatch: scrape1=%d, scrape2=%d", len(metrics1), len(metrics2))
+	}
+
+	for i := range metrics1 {
+		m1 := metrics1[i]
+		m2 := metrics2[i]
+		if m1.desc != m2.desc {
+			t.Errorf("[%d] desc mismatch: %q vs %q", i, m1.desc, m2.desc)
+		}
+		if m1.val != m2.val {
+			t.Errorf("[%d] val mismatch: %v vs %v", i, m1.val, m2.val)
+		}
+		if len(m1.labels) != len(m2.labels) {
+			t.Errorf("[%d] label count mismatch: %d vs %d", i, len(m1.labels), len(m2.labels))
+		}
+		for k, v1 := range m1.labels {
+			if v2, ok := m2.labels[k]; !ok || v1 != v2 {
+				t.Errorf("[%d] label %s mismatch: %q vs %q", i, k, v1, v2)
+			}
+		}
+	}
+}
+
+func TestCollectLabelTruncationsFirstScrapeAndAccumulate(t *testing.T) {
+	store := NewHistoryStore()
+	sample := ProcessSample{
+		Timestamp: time.Now(),
+		PID:       8888,
+		Name:      strings.Repeat("n", 500),
+		CmdLine:   strings.Repeat("c", 6000),
+		Environ: map[string]string{
+			"CI_JOB_NAME": strings.Repeat("j", 1000),
+		},
+		CreateTime: 500,
+		IsActive:   true,
+	}
+	store.AddSample(sample)
+
+	collector := NewProcessCollector(store)
+	reg := prometheus.NewPedanticRegistry()
+	if err := reg.Register(collector); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Scrape 1 (Cold cache: truncations counted on first scrape)
+	mfs1, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather 1: %v", err)
+	}
+	counts1 := truncationCounts(t, mfs1)
+	if counts1["name"] < 1 {
+		t.Errorf("expected name truncation on first scrape, got %v", counts1["name"])
+	}
+	if counts1["cmdline"] < 1 {
+		t.Errorf("expected cmdline truncation on first scrape, got %v", counts1["cmdline"])
+	}
+	if counts1["ci_job_name"] < 1 {
+		t.Errorf("expected ci_job_name truncation on first scrape, got %v", counts1["ci_job_name"])
+	}
+
+	key := fmt.Sprintf("%d-%d", sample.PID, sample.CreateTime)
+	collector.labelMu.Lock()
+	cached := collector.cachedProcessLabels[key]
+	collector.labelMu.Unlock()
+	if cached == nil {
+		t.Fatalf("expected cached entry for %s", key)
+	}
+	if len(cached.truncatedLabels) < 3 {
+		t.Errorf("expected at least 3 truncated labels, got %v", cached.truncatedLabels)
+	}
+
+	// Scrape 2 (Warm cache: truncations accumulate)
+	mfs2, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather 2: %v", err)
+	}
+	counts2 := truncationCounts(t, mfs2)
+	if counts2["name"] <= counts1["name"] {
+		t.Errorf("name truncation did not accumulate: %v then %v", counts1["name"], counts2["name"])
+	}
+	if counts2["cmdline"] <= counts1["cmdline"] {
+		t.Errorf("cmdline truncation did not accumulate: %v then %v", counts1["cmdline"], counts2["cmdline"])
+	}
+	if counts2["ci_job_name"] <= counts1["ci_job_name"] {
+		t.Errorf("ci_job_name truncation did not accumulate: %v then %v", counts1["ci_job_name"], counts2["ci_job_name"])
+	}
+}
+
+func TestCollectCachedProcessLabelsEviction(t *testing.T) {
+	store := NewHistoryStore()
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        1001,
+		Name:       "proc1",
+		CreateTime: 100,
+		IsActive:   true,
+	})
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        1002,
+		Name:       "proc2",
+		CreateTime: 200,
+		IsActive:   true,
+	})
+
+	collector := NewProcessCollector(store)
+	ch1 := make(chan prometheus.Metric, 64)
+	collector.Collect(ch1)
+	close(ch1)
+	for range ch1 {
+	}
+
+	collector.labelMu.Lock()
+	if len(collector.cachedProcessLabels) != 2 {
+		t.Fatalf("expected 2 cached process entries, got %d", len(collector.cachedProcessLabels))
+	}
+	if _, ok := collector.cachedProcessLabels["1001-100"]; !ok {
+		t.Error("expected 1001-100 to be cached")
+	}
+	if _, ok := collector.cachedProcessLabels["1002-200"]; !ok {
+		t.Error("expected 1002-200 to be cached")
+	}
+	collector.labelMu.Unlock()
+
+	// 1001 exits, only 1002 remains active
+	store.MarkInactive(map[int32]bool{1002: true})
+
+	ch2 := make(chan prometheus.Metric, 64)
+	collector.Collect(ch2)
+	close(ch2)
+	for range ch2 {
+	}
+
+	collector.labelMu.Lock()
+	if len(collector.cachedProcessLabels) != 1 {
+		t.Fatalf("expected 1 cached process entry after eviction, got %d", len(collector.cachedProcessLabels))
+	}
+	if _, ok := collector.cachedProcessLabels["1001-100"]; ok {
+		t.Error("expected 1001-100 to be evicted from cache")
+	}
+	if _, ok := collector.cachedProcessLabels["1002-200"]; !ok {
+		t.Error("expected 1002-200 to remain cached")
+	}
+	collector.labelMu.Unlock()
+
+	// PID reuse: 1002 replaced by new process with CreateTime 300
+	store.AddSample(ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        1002,
+		Name:       "proc2-reused",
+		CreateTime: 300,
+		IsActive:   true,
+	})
+
+	ch3 := make(chan prometheus.Metric, 64)
+	collector.Collect(ch3)
+	close(ch3)
+	for range ch3 {
+	}
+
+	collector.labelMu.Lock()
+	if len(collector.cachedProcessLabels) != 1 {
+		t.Fatalf("expected 1 cached process entry, got %d", len(collector.cachedProcessLabels))
+	}
+	if _, ok := collector.cachedProcessLabels["1002-200"]; ok {
+		t.Error("expected old 1002-200 to be evicted")
+	}
+	if _, ok := collector.cachedProcessLabels["1002-300"]; !ok {
+		t.Error("expected new 1002-300 to be cached")
+	}
+	collector.labelMu.Unlock()
+
+	// All processes exit
+	store.MarkInactive(map[int32]bool{})
+
+	ch4 := make(chan prometheus.Metric, 64)
+	collector.Collect(ch4)
+	close(ch4)
+	for range ch4 {
+	}
+
+	collector.labelMu.Lock()
+	if len(collector.cachedProcessLabels) != 0 {
+		t.Errorf("expected 0 cached entries after all exited, got %d", len(collector.cachedProcessLabels))
+	}
+	collector.labelMu.Unlock()
+}
+
+func BenchmarkProcessCollectorCollect(b *testing.B) {
+	store := NewHistoryStore()
+	for i := int32(1); i <= 50; i++ {
+		store.AddSample(ProcessSample{
+			Timestamp: time.Now(),
+			PID:       1000 + i,
+			Name:      fmt.Sprintf("worker-%d", i),
+			CmdLine:   fmt.Sprintf("/usr/bin/worker --id=%d --verbose", i),
+			Environ: map[string]string{
+				"CI_JOB_ID":       fmt.Sprintf("%d", 20000+i),
+				"CI_JOB_NAME":     "test-suite",
+				"CI_PROJECT_PATH": "gitlab-org/gitlab",
+				"CI_PIPELINE_ID":  "99999",
+				"SECRET_KEY":      "super-secret-token", //nolint:gosec // fake test secret
+				"WORKER_NUM":      fmt.Sprintf("%d", i),
+			},
+			CPUSeconds: 100.0 + float64(i),
+			MemoryRSS:  100 * 1024 * 1024,
+			MemoryVMS:  200 * 1024 * 1024,
+			CreateTime: 1000 + int64(i),
+			IsActive:   true,
+		})
+	}
+
+	collector := NewProcessCollector(store)
+	ch := make(chan prometheus.Metric, 1024)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		collector.Collect(ch)
+		for len(ch) > 0 {
+			<-ch
 		}
 	}
 }

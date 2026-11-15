@@ -15,6 +15,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+	"unique"
 
 	"github.com/rachlenko/gitlab-procs-exporter/deploy"
 	"github.com/rachlenko/gitlab-procs-exporter/exporter"
@@ -356,18 +357,31 @@ func serveAPIHistory(w http.ResponseWriter, r *http.Request, store *exporter.His
 	// Redact each timeline's environ in place. QueryHistory already returns
 	// fresh copies of the sample slices (see exporter.HistoryStore.QueryHistory),
 	// so mutating them here never touches the store's own samples.
+	// Redact once per matched process timeline from the latest sample and
+	// assign the shared redacted map to all samples in that timeline.
 	for _, samples := range history {
+		if len(samples) == 0 {
+			continue
+		}
+		redacted := exporter.RedactEnviron(samples[len(samples)-1].Environ, redactKeySubstrings)
 		for i := range samples {
-			samples[i].Environ = exporter.RedactEnviron(samples[i].Environ, redactKeySubstrings)
+			samples[i].Environ = redacted
 		}
 	}
 
 	_ = json.NewEncoder(w).Encode(history)
 }
 
+func intern(s string) string {
+	return unique.Make(s).Value()
+}
+
 // Background scraper with process object reuse for CPU calculation accuracy
 func startScraper(ctx context.Context, store *exporter.HistoryStore, interval time.Duration, inCluster bool) {
-	procCache := make(map[int32]*process.Process)
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(50)
+	}
+	procCache := make(map[int32]*procEntry)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -409,14 +423,24 @@ func startKubeScraper(ctx context.Context, kubeStore *exporter.KubeStore, client
 	}
 }
 
-// liveProcess returns the cached *process.Process for pid, evicting the entry
+type procEntry struct {
+	proc       *process.Process
+	name       string
+	cmdline    string
+	environ    map[string]string
+	podUID     string
+	createTime int64
+}
+
+// liveProcessEntry returns the cached *procEntry for pid, evicting the entry
 // when the PID now belongs to a different process (the kernel reuses PIDs;
-// gopsutil's IsRunning compares create times). Without this, the newcomer
-// inherits the old process's CPU Percent baseline and cached create time.
-func liveProcess(procCache map[int32]*process.Process, pid int32) (*process.Process, error) {
-	if p, ok := procCache[pid]; ok {
-		if running, err := p.IsRunning(); err == nil && running {
-			return p, nil
+// gopsutil's IsRunning compares create times). When the process is first observed
+// or when a PID reuse is detected, static process metadata (name, cmdline, environ,
+// podUID, createTime) is queried once and cached in the procEntry.
+func liveProcessEntry(procCache map[int32]*procEntry, pid int32, inCluster bool, now time.Time) (*procEntry, error) {
+	if entry, ok := procCache[pid]; ok {
+		if running, err := entry.proc.IsRunning(); err == nil && running {
+			return entry, nil
 		}
 		delete(procCache, pid)
 	}
@@ -424,43 +448,63 @@ func liveProcess(procCache map[int32]*process.Process, pid int32) (*process.Proc
 	if err != nil {
 		return nil, err
 	}
-	procCache[pid] = p
-	return p, nil
+	name, err := p.Name()
+	if err != nil {
+		return nil, err
+	}
+	createTime, err := p.CreateTime()
+	if err != nil {
+		createTime = now.UnixNano() / int64(time.Millisecond) // fallback
+	}
+	cmdline, err := p.Cmdline()
+	if err != nil {
+		cmdline = ""
+	}
+	var environMap map[string]string
+	if environSlice, err := p.Environ(); err == nil {
+		environMap = make(map[string]string, len(environSlice))
+		for _, env := range environSlice {
+			if k, v, ok := strings.Cut(env, "="); ok {
+				environMap[intern(k)] = intern(v)
+			}
+		}
+	} else {
+		environMap = make(map[string]string)
+	}
+	podUID := ""
+	if inCluster {
+		podUID = intern(exporter.ProcessPodUID(pid))
+	}
+	entry := &procEntry{
+		proc:       p,
+		name:       intern(name),
+		cmdline:    cmdline,
+		environ:    environMap,
+		podUID:     podUID,
+		createTime: createTime,
+	}
+	procCache[pid] = entry
+	return entry, nil
 }
 
-func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, inCluster bool) {
+func scrape(store *exporter.HistoryStore, procCache map[int32]*procEntry, inCluster bool) {
 	pids, err := process.Pids()
 	if err != nil {
 		log.Printf("Error getting PIDs: %v", err)
 		return
 	}
 
-	activePids := make(map[int32]bool)
+	activePids := make(map[int32]bool, len(pids))
 	now := time.Now()
 
 	for _, pid := range pids {
 		activePids[pid] = true
 
-		p, err := liveProcess(procCache, pid)
+		entry, err := liveProcessEntry(procCache, pid, inCluster, now)
 		if err != nil {
 			continue // Process exited or inaccessible
 		}
-
-		// Retrieve fields, handling errors gracefully
-		name, err := p.Name()
-		if err != nil {
-			continue // Process dead
-		}
-
-		createTime, err := p.CreateTime()
-		if err != nil {
-			createTime = now.UnixNano() / int64(time.Millisecond) // fallback
-		}
-
-		cmdline, err := p.Cmdline()
-		if err != nil {
-			cmdline = ""
-		}
+		p := entry.proc
 
 		// CPU Usage percent
 		cpuUsage, err := p.Percent(0)
@@ -500,32 +544,14 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 			self = st
 		}
 
-		// Environment variables
-		environMap := make(map[string]string)
-		environSlice, err := p.Environ()
-		if err == nil {
-			for _, env := range environSlice {
-				parts := strings.SplitN(env, "=", 2)
-				if len(parts) == 2 {
-					environMap[parts[0]] = parts[1]
-				}
-			}
-		}
-
-		// Resolve the owning pod UID from cgroup (in-cluster only).
-		podUID := ""
-		if inCluster {
-			podUID = exporter.ProcessPodUID(pid)
-		}
-
 		// Add sample to HistoryStore
 		store.AddSample(exporter.ProcessSample{
 			Timestamp:           now,
 			PID:                 pid,
-			Name:                name,
-			PodUID:              podUID,
-			CmdLine:             cmdline,
-			Environ:             environMap,
+			Name:                entry.name,
+			PodUID:              entry.podUID,
+			CmdLine:             entry.cmdline,
+			Environ:             entry.environ,
 			CPUUsage:            cpuUsage,
 			CPUSeconds:          cpuSeconds,
 			MemoryRSS:           rss,
@@ -538,7 +564,7 @@ func scrape(store *exporter.HistoryStore, procCache map[int32]*process.Process, 
 			IOWriteSelf:         self.WriteBytes,
 			IOReadSyscallsSelf:  self.ReadSyscalls,
 			IOWriteSyscallsSelf: self.WriteSyscalls,
-			CreateTime:          createTime,
+			CreateTime:          entry.createTime,
 			IsActive:            true,
 		})
 	}

@@ -204,6 +204,186 @@ func TestPruneAll(t *testing.T) {
 	}
 }
 
+func TestPruneInPlaceBoundaryConditions(t *testing.T) {
+	now := time.Now()
+
+	t.Run("all expired", func(t *testing.T) {
+		hs := NewHistoryStore()
+		key := "100-1"
+		hs.processes[key] = []ProcessSample{
+			{Timestamp: now.Add(-20 * time.Minute), PID: 100, CreateTime: 1},
+			{Timestamp: now.Add(-15 * time.Minute), PID: 100, CreateTime: 1},
+			{Timestamp: now.Add(-11 * time.Minute), PID: 100, CreateTime: 1},
+		}
+
+		hs.pruneExpiredSamples(key)
+
+		if _, exists := hs.processes[key]; exists {
+			t.Errorf("expected key %s to be deleted when all samples expired", key)
+		}
+	})
+
+	t.Run("none expired", func(t *testing.T) {
+		hs := NewHistoryStore()
+		key := "100-2"
+		hs.processes[key] = []ProcessSample{
+			{Timestamp: now.Add(-8 * time.Minute), PID: 100, CreateTime: 2},
+			{Timestamp: now.Add(-5 * time.Minute), PID: 100, CreateTime: 2},
+			{Timestamp: now.Add(-1 * time.Minute), PID: 100, CreateTime: 2},
+		}
+
+		hs.pruneExpiredSamples(key)
+
+		samples, exists := hs.processes[key]
+		if !exists {
+			t.Fatalf("expected key %s to remain present", key)
+		}
+		if len(samples) != 3 {
+			t.Fatalf("expected 3 samples remaining, got %d", len(samples))
+		}
+		if samples[0].Timestamp.Before(now.Add(-10 * time.Minute)) {
+			t.Errorf("unexpected expired sample: %+v", samples[0])
+		}
+	})
+
+	t.Run("partial expiration", func(t *testing.T) {
+		hs := NewHistoryStore()
+		key := "100-3"
+		t1 := now.Add(-25 * time.Minute)
+		t2 := now.Add(-15 * time.Minute)
+		t3 := now.Add(-5 * time.Minute)
+		t4 := now.Add(-2 * time.Minute)
+		t5 := now
+
+		hs.processes[key] = []ProcessSample{
+			{Timestamp: t1, PID: 100, Name: "s1", CreateTime: 3},
+			{Timestamp: t2, PID: 100, Name: "s2", CreateTime: 3},
+			{Timestamp: t3, PID: 100, Name: "s3", CreateTime: 3},
+			{Timestamp: t4, PID: 100, Name: "s4", CreateTime: 3},
+			{Timestamp: t5, PID: 100, Name: "s5", CreateTime: 3},
+		}
+
+		hs.pruneExpiredSamples(key)
+
+		samples, exists := hs.processes[key]
+		if !exists {
+			t.Fatalf("expected key %s to exist", key)
+		}
+		if len(samples) != 3 {
+			t.Fatalf("expected 3 valid samples, got %d", len(samples))
+		}
+		if samples[0].Name != "s3" || samples[1].Name != "s4" || samples[2].Name != "s5" {
+			t.Errorf("unexpected sample names: got %q, %q, %q", samples[0].Name, samples[1].Name, samples[2].Name)
+		}
+	})
+}
+
+func TestPruneZeroedTail(t *testing.T) {
+	now := time.Now()
+	hs := NewHistoryStore()
+	key := "42-100"
+
+	// Allocate a slice with capacity 6
+	samples := make([]ProcessSample, 6)
+	samples[0] = ProcessSample{Timestamp: now.Add(-20 * time.Minute), PID: 42, Name: "p0", Environ: map[string]string{"K0": "V0"}}
+	samples[1] = ProcessSample{Timestamp: now.Add(-15 * time.Minute), PID: 42, Name: "p1", Environ: map[string]string{"K1": "V1"}}
+	samples[2] = ProcessSample{Timestamp: now.Add(-8 * time.Minute), PID: 42, Name: "p2", Environ: map[string]string{"K2": "V2"}}
+	samples[3] = ProcessSample{Timestamp: now.Add(-5 * time.Minute), PID: 42, Name: "p3", Environ: map[string]string{"K3": "V3"}}
+	samples[4] = ProcessSample{Timestamp: now.Add(-2 * time.Minute), PID: 42, Name: "p4", Environ: map[string]string{"K4": "V4"}}
+	samples[5] = ProcessSample{Timestamp: now, PID: 42, Name: "p5", Environ: map[string]string{"K5": "V5"}}
+
+	hs.processes[key] = samples
+
+	hs.pruneExpiredSamples(key)
+
+	pruned, ok := hs.processes[key]
+	if !ok {
+		t.Fatalf("expected key %s to exist", key)
+	}
+	if len(pruned) != 4 {
+		t.Fatalf("expected 4 remaining samples, got %d", len(pruned))
+	}
+	if cap(pruned) != 6 {
+		t.Fatalf("expected backing array capacity 6, got %d", cap(pruned))
+	}
+
+	// Verify valid elements were moved to front
+	if pruned[0].Name != "p2" || pruned[1].Name != "p3" || pruned[2].Name != "p4" || pruned[3].Name != "p5" {
+		t.Errorf("elements incorrectly copied: got %v", pruned)
+	}
+
+	// Inspect the tail beyond the resliced length up to capacity
+	fullBackingArray := pruned[:cap(pruned)]
+	for i := 4; i < 6; i++ {
+		tailElem := fullBackingArray[i]
+		if tailElem.PID != 0 || tailElem.Name != "" || tailElem.Environ != nil || !tailElem.Timestamp.IsZero() {
+			t.Errorf("tail element at index %d was not zeroed out: %+v", i, tailElem)
+		}
+	}
+}
+
+func TestPruneRapidSampleAppendsMemory(t *testing.T) {
+	hs := NewHistoryStore()
+	now := time.Now()
+
+	// Simulate rapid sample appends: initially populate historical samples
+	key := "500-1"
+	// Start with 50 expired samples (-20m to -11m) and 50 valid samples (-9m to -1m)
+	initial := make([]ProcessSample, 0, 100)
+	for i := 0; i < 50; i++ {
+		initial = append(initial, ProcessSample{
+			Timestamp:  now.Add(-20*time.Minute + time.Duration(i)*10*time.Second),
+			PID:        500,
+			CreateTime: 1,
+			Name:       "rapid-worker",
+			Environ:    map[string]string{"WORKER_ID": fmt.Sprintf("%d", i)},
+		})
+	}
+	for i := 50; i < 100; i++ {
+		initial = append(initial, ProcessSample{
+			Timestamp:  now.Add(-9*time.Minute + time.Duration(i-50)*10*time.Second),
+			PID:        500,
+			CreateTime: 1,
+			Name:       "rapid-worker",
+			Environ:    map[string]string{"WORKER_ID": fmt.Sprintf("%d", i)},
+		})
+	}
+	hs.processes[key] = initial
+	hs.activeKeys[500] = key
+
+	// Append 2,000 samples rapidly with recent timestamps
+	for i := 0; i < 2000; i++ {
+		hs.AddSample(ProcessSample{
+			Timestamp:  now.Add(time.Duration(i) * time.Millisecond),
+			PID:        500,
+			CreateTime: 1,
+			Name:       "rapid-worker",
+			Environ:    map[string]string{"CYCLE": fmt.Sprintf("%d", i)},
+		})
+	}
+
+	samples := hs.processes[key]
+	// All remaining samples must be within the 10-minute window
+	cutoff := now.Add(-10 * time.Minute)
+	for _, s := range samples {
+		if s.Timestamp.Before(cutoff) {
+			t.Errorf("found expired sample after rapid appends: %s (cutoff: %s)", s.Timestamp, cutoff)
+			break
+		}
+	}
+
+	// Verify that AddSample when oldest sample is within 10-minute window performs 0 pruning allocations
+	allocs := testing.AllocsPerRun(100, func() {
+		hs.mu.Lock()
+		defer hs.mu.Unlock()
+		// Test pruneKey directly on a process where oldest sample is within window
+		hs.pruneKey(key, time.Now().Add(-10*time.Minute))
+	})
+	if allocs > 0 {
+		t.Errorf("expected 0 allocations when oldest sample is within window, got %f", allocs)
+	}
+}
+
 func TestConcurrentSafety(t *testing.T) {
 	hs := NewHistoryStore()
 	var wg sync.WaitGroup
@@ -278,5 +458,51 @@ func TestQueryHistoryReturnsCopies(t *testing.T) {
 		if !samples[len(samples)-1].IsActive {
 			t.Errorf("QueryHistory result for %q was mutated by MarkInactive: expected a copy", key)
 		}
+	}
+}
+
+func BenchmarkPruneExpiredSamplesInPlace(b *testing.B) {
+	now := time.Now()
+	hs := NewHistoryStore()
+	key := "10-100"
+
+	samples := make([]ProcessSample, 20)
+	for j := 0; j < 10; j++ {
+		samples[j] = ProcessSample{Timestamp: now.Add(-15 * time.Minute), PID: 10, CreateTime: 100}
+	}
+	for j := 10; j < 20; j++ {
+		samples[j] = ProcessSample{Timestamp: now.Add(-5 * time.Minute), PID: 10, CreateTime: 100}
+	}
+
+	buf := make([]ProcessSample, 20)
+	copy(buf, samples)
+	hs.processes[key] = buf
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		hs.processes[key] = buf[:20]
+		copy(buf, samples)
+		hs.pruneExpiredSamples(key)
+	}
+}
+
+func BenchmarkAddSampleWithinWindow(b *testing.B) {
+	hs := NewHistoryStore()
+	sample := ProcessSample{
+		Timestamp:  time.Now(),
+		PID:        42,
+		CreateTime: 100,
+		Name:       "test-proc",
+	}
+	hs.AddSample(sample)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		sample.Timestamp = time.Now()
+		hs.AddSample(sample)
 	}
 }

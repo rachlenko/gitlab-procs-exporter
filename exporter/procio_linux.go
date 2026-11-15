@@ -3,13 +3,13 @@
 package exporter
 
 import (
-	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 )
 
 // SelfIO returns the I/O issued by pid's own threads.
@@ -30,7 +30,12 @@ import (
 // keep reading the process-wide counter.
 func SelfIO(procRoot string, pid int32) (IOStats, error) {
 	taskDir := filepath.Join(procRoot, strconv.Itoa(int(pid)), "task")
-	entries, err := os.ReadDir(taskDir)
+	f, err := os.Open(taskDir)
+	if err != nil {
+		return IOStats{}, err
+	}
+	entries, err := f.ReadDir(-1)
+	_ = f.Close()
 	if err != nil {
 		return IOStats{}, err
 	}
@@ -70,15 +75,46 @@ func parseProcIO(path string) (IOStats, error) {
 	}
 	defer f.Close()
 
+	var buf [512]byte
+	n, err := f.Read(buf[:])
+	if err != nil && !errors.Is(err, io.EOF) {
+		return IOStats{}, fmt.Errorf("%s: %w", path, err)
+	}
+
+	data := buf[:n]
+	if n == len(buf) {
+		rest, readErr := io.ReadAll(f)
+		if readErr != nil {
+			return IOStats{}, fmt.Errorf("%s: %w", path, readErr)
+		}
+		data = append(buf[:n], rest...)
+	}
+
+	return parseIOBytes(data, path)
+}
+
+func parseIOBytes(data []byte, path string) (IOStats, error) {
 	var st IOStats
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		key, val, ok := strings.Cut(sc.Text(), ": ")
-		if !ok {
+	for len(data) > 0 {
+		nl := bytes.IndexByte(data, '\n')
+		var line []byte
+		if nl >= 0 {
+			line = data[:nl]
+			data = data[nl+1:]
+		} else {
+			line = data
+			data = nil
+		}
+		line = bytes.TrimRight(line, "\r")
+		colon := bytes.Index(line, []byte(": "))
+		if colon < 0 {
 			continue
 		}
+		key := line[:colon]
+		val := line[colon+2:]
+
 		var target *uint64
-		switch key {
+		switch string(key) {
 		case "read_bytes":
 			target = &st.ReadBytes
 		case "write_bytes":
@@ -90,14 +126,27 @@ func parseProcIO(path string) (IOStats, error) {
 		default:
 			continue
 		}
-		n, err := strconv.ParseUint(val, 10, 64)
+
+		n, err := parseUintBytes(val)
 		if err != nil {
-			return IOStats{}, fmt.Errorf("%s: parsing %q: %w", path, key, err)
+			return IOStats{}, fmt.Errorf("%s: parsing %q: %w", path, string(key), err)
 		}
 		*target = n
 	}
-	if err := sc.Err(); err != nil {
-		return IOStats{}, fmt.Errorf("%s: %w", path, err)
-	}
 	return st, nil
+}
+
+func parseUintBytes(b []byte) (uint64, error) {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 {
+		return 0, errors.New("empty integer")
+	}
+	var n uint64
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			return 0, errors.New("invalid digit")
+		}
+		n = n*10 + uint64(c-'0')
+	}
+	return n, nil
 }

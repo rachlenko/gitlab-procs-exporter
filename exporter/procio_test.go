@@ -162,3 +162,21 @@ func TestParseProcIOToleratesUnknownKeys(t *testing.T) {
 		t.Errorf("SelfIO = %+v, want %+v", got, want)
 	}
 }
+
+func BenchmarkParseProcIO(b *testing.B) {
+	root := b.TempDir()
+	path := filepath.Join(root, "io")
+	data := []byte("rchar: 7144\nwchar: 0\nsyscr: 10\nsyscw: 5\nread_bytes: 1024\nwrite_bytes: 2048\ncancelled_write_bytes: 0\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		b.Fatalf("WriteFile: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := parseProcIO(path)
+		if err != nil {
+			b.Fatalf("parseProcIO: %v", err)
+		}
+	}
+}
