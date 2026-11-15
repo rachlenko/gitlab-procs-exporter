@@ -28,6 +28,10 @@ import (
 //go:embed dashboard/index.html
 var dashboardHTML embed.FS
 
+func init() {
+	process.EnableBootTimeCache(true)
+}
+
 // revision is injected at build time via -ldflags "-X main.revision=...".
 // When the binary is produced by `go install module@version`, it stays "dev"
 // here and the real version is recovered from the embedded build info instead.
